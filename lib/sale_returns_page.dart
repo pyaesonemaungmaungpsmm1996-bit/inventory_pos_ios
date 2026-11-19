@@ -6,7 +6,8 @@ import 'product_details_form.dart';
 import 'amount_input.dart';
 
 import 'package:flutter/material.dart';
-import 'package:printing/printing.dart';
+
+import 'voucher_pdf_preview.dart';
 
 import 'app_currency.dart';
 import 'app_database.dart';
@@ -976,12 +977,10 @@ class _ReturnDetailState extends State<_ReturnDetail> {
         MaterialPageRoute(
           builder: (_) => DesktopScaffold(
             appBar: AppBar(title: Text('${_no('RET', widget.returnId)} · PDF')),
-            body: PdfPreview(
-              build: (_) async => pdf.bytes,
-              initialPageFormat: pdf.format,
-              canChangePageFormat: false,
-              canChangeOrientation: false,
-              canDebug: false,
+            body: VoucherPdfPreview(
+              bytes: pdf.bytes,
+              format: pdf.format,
+              name: "${_no('RET', widget.returnId)}.pdf",
             ),
           ),
         ),

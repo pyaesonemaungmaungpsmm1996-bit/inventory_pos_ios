@@ -136,6 +136,8 @@ Future<_RowImage> _renderInvoiceRow(
   }
 }
 
+bool _usesSalesA4Header(String kind) => kind == 'INV' || kind == 'RET';
+
 Future<GeneratedInvoicePdf> buildInvoicePdf({
   required Map<String, Object?> sale,
   required InvoicePrintSettings settings,
@@ -170,9 +172,10 @@ Future<GeneratedInvoicePdf> buildInvoicePdf({
   }
   final printSale = <String, Object?>{
     ...sale,
+    'document_number': VoucherCode.displayNumber(sale),
     if (settings.paper == 'a4' &&
         !settings.narrow &&
-        VoucherCode.kindOf(sale) == 'INV')
+        _usesSalesA4Header(VoucherCode.kindOf(sale)))
       'print_a4_branch_blocks': InvoiceBranchHeader.resolve(
         sale,
         settings.a4,
@@ -399,6 +402,10 @@ Future<GeneratedInvoicePdf> buildSaleReturnPdf({
       '${settings.showItemCode ? '${item['item_code']} · ' : ''}${item['item_name']}',
       bold: true,
     );
+    for (final lot in ProductTracking.decode(item['tracking_json'])) {
+      if (lot['serial'] != null) line('Serial: ${lot['serial']}');
+      if (lot['imei'] != null) line('IMEI: ${lot['imei']}');
+    }
     rows.add(
       InvoicePrintRow([
         '${t('Quantity returned', 'ပြန်ယူအရေအတွက်')}: ${item['qty']}',

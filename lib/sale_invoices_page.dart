@@ -1,3 +1,4 @@
+import 'sale_linked_review.dart';
 import 'split_payment_dialog.dart';
 import 'catalog_search.dart';
 import 'product_tracking.dart';
@@ -1022,8 +1023,8 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
       if (editing != null) {
         for (final row in await (await db.database).query(
           'sale_items',
-          where: 'sale_id=?',
-          whereArgs: [editing],
+          where: 'sale_id=? AND EXISTS(SELECT 1 FROM sale_invoices s WHERE s.id=sale_items.sale_id AND s.branch_id=?)',
+          whereArgs: [editing, branchId],
         )) {
           final product = p
               .where((p) => p['id'] == row['product_id'])
@@ -1370,15 +1371,14 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
       );
       return;
     }
-    if (openPayment && !await desktopReview()) {
-      return;
-    }
     if (!mounted) return;
     setState(() {
       saving = true;
       error = null;
     });
     try {
+      if (openPayment && !await desktopReview()) return;
+      if (!mounted) return;
       int? contactId = customerId;
       bool createContact =
           (saveContact || (openPayment && desktopBalance > 0)) &&
@@ -1485,6 +1485,10 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
           revision: savedDraftRevision!,
           paymentDate: _date(desktopPaymentDate),
           payments: desktopPaymentSplits,
+          linkedResolutions: linkedReview?.resolutions ?? const {},
+          linkedReceiptEdits: linkedReview?.receipts ?? const {},
+          linkedReturnEdits: linkedReview?.returns ?? const {},
+          linkedExchangeEdits: linkedReview?.exchanges ?? const {},
         );
         _dirty = false;
         await _pop(_DraftResult(branchId, confirmedSaleId: saleId));
@@ -1499,7 +1503,9 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
       _touch();
       if (mounted) {
         setState(
-          () => error = e is StateError
+          () => error = e is ArgumentError
+              ? (e.message?.toString() ?? 'Check the entered amounts.')
+              : e is StateError
               ? e.message
               : _t(
                   'Could not save. Check fields and retry.',
@@ -1612,7 +1618,10 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
         desktopPaid.text.trim().isEmpty ? '0' : desktopPaid.text.trim(),
       ) ??
       0;
-  int get desktopBalance => desktopTotal - desktopPaidAmount;
+  SaleLinkedReview? linkedReview;
+  int get linkedPaid =>
+      linkedReview?.allocated ?? widget.draft?['linked_paid'] as int? ?? 0;
+  int get desktopBalance => desktopTotal - desktopPaidAmount - linkedPaid;
   String get desktopPaymentJson => jsonEncode({
     'account_id': desktopAccountId,
     'text': desktopPaid.text,
@@ -1832,6 +1841,22 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
     _touch();
   }
 
+  Future<bool> reviewLinkedInvoiceEdit() async {
+    final draft = widget.draft;
+    linkedReview = null;
+    if (draft == null) return true;
+    final result = await showSaleLinkedReview(
+      context,
+      draft: draft,
+      branchId: branchId,
+      lines: lines,
+      products: products,
+    );
+    if (!mounted || result == null) return false;
+    linkedReview = result;
+    return true;
+  }
+
   Future<bool> desktopReview() async {
     if (desktopPaymentSplits.fold<int>(0, (sum, p) => sum + p['amount']!) !=
         desktopPaidAmount) {
@@ -1839,26 +1864,6 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
         if (desktopPaidAmount > 0 && desktopAccountId != null)
           {'account_id': desktopAccountId!, 'amount': desktopPaidAmount},
       ];
-    }
-    if (desktopPaidAmount < 0 ||
-        desktopPaidAmount > desktopTotal ||
-        (desktopPaidAmount > 0 && desktopAccountId == null)) {
-      setState(
-        () => error = _t(
-          'Check Paid and choose a payment account.',
-          'ပေးချေငွေနှင့် လက်ခံမည့်ငွေစာရင်းကို စစ်ပါ။',
-        ),
-      );
-      return false;
-    }
-    if (desktopBalance > 0 && customerId == null && name.text.trim().isEmpty) {
-      setState(
-        () => error = _t(
-          'A credit sale needs a customer name or saved customer.',
-          'အကြွေးရောင်းရန် ဝယ်သူနာမည်ထည့်ပါ သို့မဟုတ် သိမ်းထားသော ဝယ်သူကို ရွေးပါ။',
-        ),
-      );
-      return false;
     }
     // Changing tracked quantities requires a fresh exact lot selection.
     for (var i = 0; i < lines.length; i++) {
@@ -1896,6 +1901,27 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
         desktopLots.addAll({for (final lot in labels) lot['id'] as int: lot});
       });
       _touch();
+    }
+    if (!await reviewLinkedInvoiceEdit() || !mounted) return false;
+    if (desktopPaidAmount < 0 ||
+        desktopPaidAmount + linkedPaid > desktopTotal ||
+        (desktopPaidAmount > 0 && desktopAccountId == null)) {
+      setState(
+        () => error = _t(
+          'Check Paid and choose a payment account.',
+          'ပေးချေငွေနှင့် လက်ခံမည့်ငွေစာရင်းကို စစ်ပါ။',
+        ),
+      );
+      return false;
+    }
+    if (desktopBalance > 0 && customerId == null && name.text.trim().isEmpty) {
+      setState(
+        () => error = _t(
+          'A credit sale needs a customer name or saved customer.',
+          'အကြွေးရောင်းရန် ဝယ်သူနာမည်ထည့်ပါ သို့မဟုတ် သိမ်းထားသော ဝယ်သူကို ရွေးပါ။',
+        ),
+      );
+      return false;
     }
     return true;
   }
@@ -2478,10 +2504,7 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
                         icon: const Icon(Icons.payments_outlined),
                         label: Text(
                           desktopHint(
-                            _t(
-                              'Confirm Sale',
-                              'အရောင်းအတည်ပြုမည်',
-                            ),
+                            _t('Confirm Sale', 'အရောင်းအတည်ပြုမည်'),
                             DesktopCommand.confirm,
                           ),
                         ),

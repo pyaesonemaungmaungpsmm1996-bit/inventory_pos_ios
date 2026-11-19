@@ -349,12 +349,17 @@ class ProductTracking {
     }
   }
 
-  static Future<void> reverseSale(DatabaseExecutor db, int sale) async {
+  static Future<void> reverseSale(
+    DatabaseExecutor db,
+    int sale, {
+    Set<int> excluding = const {},
+  }) async {
     final rows = await db.rawQuery(
       'SELECT a.* FROM sale_lot_allocations a JOIN sale_items i ON i.id=a.sale_item_id WHERE i.sale_id=?',
       [sale],
     );
     for (final a in rows) {
+      if (excluding.contains(a['sale_item_id'])) continue;
       await requireLotAtTransactionBranch(
         db,
         a['lot_id'],

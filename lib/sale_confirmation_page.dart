@@ -1,3 +1,5 @@
+import 'sale_linked_review.dart';
+import 'sale_invoices_page.dart';
 import 'desktop_ui.dart';
 import 'desktop_commands.dart';
 import 'pos_ui.dart';
@@ -15,7 +17,7 @@ import 'app_currency.dart';
 import 'invoice_printer_page.dart';
 import 'app_database.dart';
 import 'invoice_void_dialog.dart';
-import 'sale_invoices_page.dart';
+import 'voucher_code.dart';
 import 'app_language.dart';
 
 String _t(String en, String my) => AppLanguage.current.value == 'my' ? my : en;
@@ -59,7 +61,10 @@ class _SaleConfirmationPageState extends State<SaleConfirmationPage>
     (s, c) => s + (AppCurrency.tryParse(c.text.trim()) ?? 0),
   );
   int get total => draft?['total'] as int? ?? 0;
-  int get due => total - paid;
+  SaleLinkedReview? linkedReview;
+  int get allocated =>
+      linkedReview?.allocated ?? draft?['linked_paid'] as int? ?? 0;
+  int get due => total - paid - allocated;
   @override
   void initState() {
     super.initState();
@@ -308,24 +313,39 @@ class _SaleConfirmationPageState extends State<SaleConfirmationPage>
 
   Future<void> confirm() async {
     if (busy || !ready || !form.currentState!.validate()) return;
-    if (paid > total ||
-        paid < 0 ||
-        (due > 0 &&
-            customerId == null &&
-            (!saveNew || (draft!['customer_name'] as String).trim().isEmpty))) {
-      setState(
-        () => error = _t(
-          'Check payment total and select/save a customer for credit.',
-          'ပေးချေငွေ စစ်ပါ။ အကြွေးကျန်လျှင် ဝယ်သူရွေးပါ သို့မဟုတ် သိမ်းပါ။',
-        ),
-      );
-      return;
-    }
     setState(() {
       busy = true;
       error = null;
+      linkedReview = null;
     });
     try {
+      final d = draft!;
+      if (d['correction_source_sale_id'] != null) {
+        final branch = d['branch_id'] as int;
+        final catalog = await AppDatabase.instance.getProducts(
+          branchId: branch,
+        );
+        if (!mounted) return;
+        final selection = await showSaleLinkedReview(
+          context,
+          draft: d,
+          branchId: branch,
+          products: catalog,
+          lines: (d['items'] as List).cast<Map<String, Object?>>(),
+        );
+        if (!mounted || selection == null) return;
+        linkedReview = selection;
+      }
+      if (paid < 0 ||
+          due < 0 ||
+          (due > 0 &&
+              customerId == null &&
+              (!saveNew || (d['customer_name'] as String).trim().isEmpty))) {
+        setState(
+          () => error = 'Check the payments and linked allocations. Credit sales require a customer.',
+        );
+        return;
+      }
       if (due > 0 && customerId == null && saveNew) {
         final raw = draft!['customer_phone'] as String;
         final number = raw.replaceAll(RegExp(r'[^0-9+]'), '');
@@ -377,7 +397,11 @@ class _SaleConfirmationPageState extends State<SaleConfirmationPage>
       final yes = await showDialog<bool>(
         context: context,
         builder: (c) => DesktopDialog(
-          title: Text(_t('Confirm this sale?', 'အရောင်းအတည်ပြုမလား?')),
+          title: Text(
+            d['correction_source_sale_id'] != null
+                ? 'Save changes to the original invoice?'
+                : _t('Confirm this sale?', 'အရောင်းအတည်ပြုမလား?'),
+          ),
           content: Text(
             '${_t('Total', 'ကျသင့်ငွေ')}: ${_money(total)}\n${_t('Paid', 'ပေးပြီးငွေ')}: ${_money(paid)}\n${_t('Credit due', 'အကြွေးကျန်')}: ${_money(due)}\n\n${_t('Stock will decrease and selected accounts will receive money.', 'Stock နုတ်ပြီး ရွေးထားသောငွေအကောင့်များသို့ ငွေဝင်မည်။')}',
           ),
@@ -404,6 +428,10 @@ class _SaleConfirmationPageState extends State<SaleConfirmationPage>
         paymentDate: _date(paymentDate),
         customerIdOverride: customerId,
         saveNewCustomer: saveNew,
+        linkedResolutions: linkedReview?.resolutions ?? const {},
+        linkedReceiptEdits: linkedReview?.receipts ?? const {},
+        linkedReturnEdits: linkedReview?.returns ?? const {},
+        linkedExchangeEdits: linkedReview?.exchanges ?? const {},
         payments: [
           for (final e in controllers.entries)
             if ((AppCurrency.tryParse(e.value.text.trim()) ?? 0) > 0)
@@ -861,13 +889,17 @@ class _ConfirmedSaleDetailPageState extends State<ConfirmedSaleDetailPage> {
     }
   }
 
-  Future<void> correctInvoice() async {
-    if (sale?['status'] != 'posted') return;
-    const reason = 'Edited using voucher unlock';
+  bool _openingEdit = false;
+
+  Future<void> editInvoice() async {
+    final invoice = sale;
+    if (_openingEdit || invoice == null || invoice['status'] != 'posted') {
+      return;
+    }
+    _openingEdit = true;
     try {
       final draftId = await AppDatabase.instance.createSaleCorrectionDraft(
         id: widget.saleId,
-        reason: reason,
       );
       if (!mounted) return;
       await Navigator.push<void>(
@@ -876,10 +908,13 @@ class _ConfirmedSaleDetailPageState extends State<ConfirmedSaleDetailPage> {
           builder: (_) => DesktopScaffold(
             appBar: AppBar(
               title: Text(
-                _t('Corrected sale draft', 'ပြင်ဆင်မည့် အရောင်း Draft'),
+                'Edit invoice · ${VoucherCode.displayNumber(invoice)}',
               ),
             ),
-            body: SaleInvoicesPage(initialDraftId: draftId),
+            body: SaleInvoicesPage(
+              initialBranchId: invoice['branch_id'] as int,
+              initialDraftId: draftId,
+            ),
           ),
         ),
       );
@@ -889,6 +924,8 @@ class _ConfirmedSaleDetailPageState extends State<ConfirmedSaleDetailPage> {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('$e')));
       }
+    } finally {
+      _openingEdit = false;
     }
   }
 
@@ -898,7 +935,7 @@ class _ConfirmedSaleDetailPageState extends State<ConfirmedSaleDetailPage> {
       context,
       kind: 'sale',
       id: widget.saleId,
-      number: _invoice(widget.saleId),
+      number: VoucherCode.displayNumber(sale!),
     );
     if (ok && mounted) Navigator.pop(context);
   }
@@ -909,13 +946,17 @@ class _ConfirmedSaleDetailPageState extends State<ConfirmedSaleDetailPage> {
     commands: {DesktopCommand.print: openPrint},
     child: DesktopScaffold(
       appBar: AppBar(
-        title: Text(_invoice(widget.saleId)),
+        title: Text(
+          sale == null
+              ? _invoice(widget.saleId)
+              : VoucherCode.displayNumber(sale!),
+        ),
         actions: [
           if (sale?['status'] == 'posted')
             IconButton(
-              tooltip: _t('Unlock to edit', 'သော့ဖွင့်ပြင်ရန်'),
+              tooltip: _t('Unlock to edit invoice', 'သော့ဖွင့်ပြင်ရန်'),
               icon: const Icon(Icons.lock_outline),
-              onPressed: correctInvoice,
+              onPressed: editInvoice,
             ),
           IconButton(
             tooltip: _t('Print / PDF', 'Print / PDF'),
@@ -1034,10 +1075,10 @@ class _ConfirmedSaleDetailPageState extends State<ConfirmedSaleDetailPage> {
                   ),
                 if (sale!['status'] == 'posted')
                   OutlinedButton.icon(
-                    onPressed: correctInvoice,
+                    onPressed: editInvoice,
                     icon: const Icon(Icons.edit_outlined),
                     label: Text(
-                      _t('Correct sale invoice', 'အရောင်းဘောင်ချာ ပြန်ပြင်ရန်'),
+                      _t('Edit sale invoice', 'အရောင်းဘောင်ချာ ပြန်ပြင်ရန်'),
                     ),
                   ),
                 OutlinedButton.icon(

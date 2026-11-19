@@ -11,6 +11,7 @@ Future<GeneratedInvoicePdf> _buildA4Invoice({
   final a4 = settings.a4;
   final kind = VoucherCode.kindOf(sale);
   final isReturn = kind == 'RET';
+  final useSalesHeader = _usesSalesA4Header(kind);
   final format = PdfPageFormat.a4;
   final margin = 10 * PdfPageFormat.mm;
   final width = format.width - margin * 2;
@@ -32,23 +33,7 @@ Future<GeneratedInvoicePdf> _buildA4Invoice({
     currency: currency,
     decimalPlaces: digits,
   );
-  final originalNumber =
-      sale['document_number'] as String? ??
-      '${sale['document_prefix'] ?? 'INV'}-${(sale['id'] as int).toString().padLeft(6, '0')}';
-
-  final savedCode = text(sale['branch_code_snapshot']);
-  final branchId = sale['branch_id'];
-  final prefix = savedCode.isNotEmpty
-      ? savedCode
-      : branchId is int && branchId > 0
-      ? 'BR${branchId.toString().padLeft(2, '0')}'
-      : 'BR00';
-  final suffix =
-      RegExp(r'[0-9]+$').stringMatch(originalNumber) ??
-      (sale['id'] as int).toString();
-  final number = kind == 'INV'
-      ? '$prefix-${suffix.padLeft(6, '0')}'
-      : originalNumber;
+  final number = VoucherCode.displayNumber(sale);
 
   Future<pw.Image> shaped(
     String value,
@@ -212,7 +197,7 @@ Future<GeneratedInvoicePdf> _buildA4Invoice({
   );
   final regions = <String, Rect>{};
   final elements = <pw.Widget>[];
-  if (kind == 'INV') {
+  if (useSalesHeader) {
     final addresses = List<String>.from(
       sale['print_a4_branch_blocks'] as List? ?? blocks,
     );
@@ -312,7 +297,7 @@ Future<GeneratedInvoicePdf> _buildA4Invoice({
       }
     }
   }
-  pw.Widget header() => kind != 'INV'
+  pw.Widget header() => !useSalesHeader
       ? legacyHeader()
       : pw.Column(
           children: [

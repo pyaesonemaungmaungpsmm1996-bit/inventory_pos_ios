@@ -3389,7 +3389,9 @@ class AppDatabase {
     final db = await database;
     return db.rawQuery(
       '''SELECT d.* FROM sale_drafts d WHERE d.branch_id = ?
-      AND NOT EXISTS (SELECT 1 FROM sale_invoices s WHERE s.draft_id = d.id) ORDER BY d.id DESC''',
+      AND NOT EXISTS (SELECT 1 FROM sale_invoices s WHERE s.draft_id = d.id)
+      AND d.correction_source_sale_id IS NULL
+      ORDER BY d.id DESC''',
       [branchId],
     );
   }
@@ -3409,7 +3411,22 @@ class AppDatabase {
         whereArgs: [id],
         orderBy: 'id',
       );
-      return {...rows.single, 'items': items};
+      final draft = rows.single;
+      final source = draft['correction_source_sale_id'];
+      if (source == null) return {...draft, 'items': items};
+      final links = (await txn.rawQuery(
+        """SELECT
+        (SELECT COALESCE(SUM(a.amount),0) FROM receipt_allocations a
+          JOIN customer_receipts r ON r.id=a.receipt_id
+          WHERE a.sale_id=? AND r.status='posted') AS linked_paid,
+        (SELECT COUNT(*) FROM sale_returns r
+          WHERE r.sale_id=? AND r.status='posted') AS linked_returns,
+        (SELECT COUNT(*) FROM sale_exchange_links x
+          JOIN sale_returns r ON r.id=x.return_id
+          WHERE r.sale_id=? OR x.replacement_sale_id=?) AS linked_exchanges""",
+        [source, source, source, source],
+      )).single;
+      return {...draft, 'items': items, ...links};
     });
   }
 
@@ -3971,6 +3988,14 @@ class AppDatabase {
     );
   }
 
+  Future<List<Map<String, Object?>>> _saleReturnLots(Transaction txn, int id) =>
+      txn.rawQuery(
+        """SELECT a.sale_item_id, a.lot_id, a.quantity, l.product_id, l.serial, l.imei
+           FROM return_lot_allocations a JOIN stock_lots l ON l.id = a.lot_id
+           WHERE a.return_id = ? ORDER BY a.sale_item_id, a.lot_id""",
+        [id],
+      );
+
   Future<Map<String, Object?>> getSaleReturn(int id) async {
     final db = await database;
     return db.transaction((txn) async {
@@ -3982,12 +4007,42 @@ class AppDatabase {
         [id],
       );
       if (rows.isEmpty) throw StateError('Return not found');
-      final items = await txn.query(
+      var items = await txn.query(
         'sale_return_items',
         where: 'return_id = ?',
         whereArgs: [id],
         orderBy: 'sale_item_id',
       );
+      var lots = await _saleReturnLots(txn, id);
+      if (items.isEmpty && rows.single['status'] == 'void') {
+        final archived = await txn.query(
+          'app_settings',
+          columns: ['value'],
+          where: 'key = ?',
+          whereArgs: ['sale_edit_void_return:$id'],
+        );
+        if (archived.isNotEmpty) {
+          final snapshot =
+              jsonDecode(archived.single['value'] as String) as Map;
+          items = (snapshot['items'] as List)
+              .map((row) => Map<String, Object?>.from(row as Map))
+              .toList();
+          lots = [];
+          for (final raw in snapshot['lots'] as List? ?? const []) {
+            final lot = Map<String, Object?>.from(raw as Map);
+            if (!lot.containsKey('serial')) {
+              final stock = await txn.query(
+                'stock_lots',
+                columns: ['serial', 'imei'],
+                where: 'id = ?',
+                whereArgs: [lot['lot_id']],
+              );
+              if (stock.isNotEmpty) lot.addAll(stock.single);
+            }
+            lots.add(lot);
+          }
+        }
+      }
       final refunds = await txn.rawQuery(
         '''SELECT p.*, a.name AS account_name
         FROM sale_return_refunds p JOIN money_accounts a ON a.id = p.account_id
@@ -4000,9 +4055,27 @@ class AppDatabase {
         WHERE x.return_id = ?''',
         [id],
       );
+      final tracking = <Object?, List<Map<String, Object?>>>{};
+      for (final lot in lots) {
+        (tracking[lot['sale_item_id']] ??= []).add({
+          'lot_id': lot['lot_id'],
+          'qty': lot['quantity'],
+          'serial': lot['serial'],
+          'imei': lot['imei'],
+        });
+      }
       return {
         ...rows.single,
-        'items': items,
+        'items': [
+          for (final item in items)
+            {
+              ...item,
+              'tracking_json': jsonEncode(
+                tracking[item['sale_item_id']] ?? const [],
+              ),
+            },
+        ],
+        'edit_lots': lots,
         'refunds': refunds,
         'exchange': exchange.isEmpty ? null : exchange.single,
       };
@@ -4158,7 +4231,9 @@ class AppDatabase {
       refundSum += value;
     }
     if (refundSum != amount) {
-      throw ArgumentError('Refund payments must equal return total');
+      throw ArgumentError(
+        'Refund payments must equal the calculated return total of ${AppCurrency.input(amount)}.',
+      );
     }
     final now = DateTime.now().toUtc().toIso8601String();
     final returnId = await txn.insert('sale_returns', {
@@ -4477,6 +4552,17 @@ class AppDatabase {
       );
       if (sale.isEmpty) throw StateError('Sale already void or missing');
       final source = sale.single;
+      final existing = await txn.rawQuery(
+        '''SELECT d.id FROM sale_drafts d
+           WHERE d.correction_source_sale_id = ?
+             AND NOT EXISTS (SELECT 1 FROM sale_invoices i WHERE i.draft_id = d.id)
+             AND NOT EXISTS (
+               SELECT 1 FROM app_settings s WHERE s.key = 'sale_edit_done:' || d.id
+             )
+           ORDER BY d.id DESC LIMIT 1''',
+        [id],
+      );
+      if (existing.isNotEmpty) return existing.single['id'] as int;
       final original = (await txn.query(
         'sale_drafts',
         where: 'id = ?',
@@ -4591,6 +4677,416 @@ class AppDatabase {
     });
   }
 
+  Future<Map<String, Object?>> _preparePostedSaleEdit(
+    Transaction txn, {
+    required int saleId,
+    required int draftId,
+  }) async {
+    final invoices = await txn.query(
+      'sale_invoices',
+      where: "id = ? AND status = 'posted'",
+      whereArgs: [saleId],
+    );
+    if (invoices.isEmpty) {
+      throw StateError('Invoice is no longer posted.');
+    }
+    final branchId = invoices.single['branch_id'] as int;
+    final allocated = await txn.rawQuery(
+      """SELECT COALESCE(SUM(a.amount), 0) AS amount
+      FROM receipt_allocations a JOIN customer_receipts r ON r.id = a.receipt_id
+      WHERE a.sale_id = ? AND r.status = 'posted'""",
+      [saleId],
+    );
+    await _archiveVoidedReturnLines(txn, saleId);
+    final returned = await txn.rawQuery(
+      """SELECT DISTINCT i.sale_item_id FROM sale_return_items i
+      JOIN sale_returns r ON r.id = i.return_id WHERE r.sale_id = ?""",
+      [saleId],
+    );
+    final retainedIds = returned.map((r) => r['sale_item_id'] as int).toSet();
+    final activeReturns = await txn.query(
+      'sale_returns',
+      where: "sale_id = ? AND status = 'posted'",
+      whereArgs: [saleId],
+    );
+    final items = await txn.query(
+      'sale_items',
+      where: 'sale_id = ?',
+      whereArgs: [saleId],
+      orderBy: 'id',
+    );
+    final retained = items.where((i) => retainedIds.contains(i['id'])).toList();
+    for (final item in items) {
+      if (retainedIds.contains(item['id'])) continue;
+      final qty = item['qty'] as int;
+      final count = await txn.rawUpdate(
+        '''UPDATE branch_stocks SET stock = stock + ?
+           WHERE branch_id = ? AND product_id = ? AND stock <= ?''',
+        [qty, branchId, item['product_id'], 2147483647 - qty],
+      );
+      if (count != 1) throw StateError('Stock capacity exceeded');
+    }
+    final payments = await txn.query(
+      'sale_payments',
+      where: 'sale_id = ?',
+      whereArgs: [saleId],
+    );
+    await txn.insert('app_settings', {
+      'key': 'sale_edit_archive:$saleId:$draftId',
+      'value': jsonEncode({
+        'invoice': invoices.single,
+        'items': items,
+        'payments': payments,
+        'edited_at': DateTime.now().toUtc().toIso8601String(),
+      }),
+    });
+    await ProductTracking.reverseSale(txn, saleId, excluding: retainedIds);
+    for (final item in items) {
+      if (retainedIds.contains(item['id'])) continue;
+      await txn.delete(
+        'sale_lot_allocations',
+        where: 'sale_item_id = ?',
+        whereArgs: [item['id']],
+      );
+      await txn.delete('sale_items', where: 'id = ?', whereArgs: [item['id']]);
+    }
+    await txn.delete(
+      'sale_payments',
+      where: 'sale_id = ?',
+      whereArgs: [saleId],
+    );
+    await txn.delete(
+      'stock_movements',
+      where: "sale_id = ? AND kind = 'sale' AND product_id NOT IN (SELECT product_id FROM sale_items WHERE sale_id = ?)",
+      whereArgs: [saleId, saleId],
+    );
+    await txn.delete(
+      'money_entries',
+      where: "sale_id = ? AND kind = 'receipt'",
+      whereArgs: [saleId],
+    );
+    return {
+      ...invoices.single,
+      'edit_original_items': items,
+      'edit_retained': retained,
+      'edit_returns': activeReturns,
+      'edit_allocated': allocated.single['amount'] as int,
+      'edit_accounts': payments.map((p) => p['account_id'] as int).toList(),
+    };
+  }
+
+  /// Returns the exact posted records that can be corrected with this sale.
+  Future<Map<String, List<Map<String, Object?>>>> saleEditLinks(
+    int saleId,
+  ) async {
+    final db = await database;
+    return db.transaction((txn) => _saleEditLinks(txn, saleId));
+  }
+
+  Future<Map<String, List<Map<String, Object?>>>> _saleEditLinks(
+    Transaction txn,
+    int saleId,
+  ) async => {
+    'returns': await txn.query(
+      'sale_returns',
+      columns: ['id', 'return_date', 'total'],
+      where: "sale_id = ? AND status = 'posted'",
+      whereArgs: [saleId],
+      orderBy: 'id',
+    ),
+    'receipts': await txn.rawQuery(
+      """SELECT r.id, r.payment_date, r.total, a.amount
+         FROM receipt_allocations a JOIN customer_receipts r ON r.id = a.receipt_id
+         WHERE a.sale_id = ? AND r.status = 'posted' ORDER BY r.id""",
+      [saleId],
+    ),
+    'exchanges': await txn.rawQuery(
+      """SELECT x.return_id AS id, x.replacement_sale_id FROM sale_exchange_links x
+         JOIN sale_returns r ON r.id = x.return_id
+         WHERE r.sale_id = ? OR x.replacement_sale_id = ?
+         ORDER BY x.return_id""",
+      [saleId, saleId],
+    ),
+  };
+
+  Future<void> _reviseSaleReceipt(
+    Transaction txn,
+    int receiptId,
+    int saleId,
+    int amount,
+    Map<int, int> payments,
+    int draftId,
+  ) async {
+    final receipt = (await txn.query(
+      'customer_receipts',
+      where: "id = ? AND status = 'posted'",
+      whereArgs: [receiptId],
+    )).single;
+    final allocations = await txn.query(
+      'receipt_allocations',
+      where: 'receipt_id = ?',
+      whereArgs: [receiptId],
+    );
+    final oldPayments = await txn.query(
+      'receipt_payments',
+      where: 'receipt_id = ?',
+      whereArgs: [receiptId],
+    );
+    final other = allocations
+        .where((a) => a['sale_id'] != saleId)
+        .fold<int>(0, (sum, a) => sum + (a['amount'] as int));
+    final total = other + amount;
+    if (amount < 0 ||
+        total <= 0 ||
+        total > 9000000000000 ||
+        payments.values.any((value) => value < 0) ||
+        payments.values.fold<int>(0, (sum, value) => sum + value) != total) {
+      throw StateError(
+        'Receipt payments must match the revised allocation plus the allocations on other invoices. Use Reverse for a receipt that should be zero.',
+      );
+    }
+    await txn.insert('app_settings', {
+      'key': 'sale_edit_receipt:$receiptId:$draftId',
+      'value': jsonEncode({
+        'receipt': receipt,
+        'allocations': allocations,
+        'payments': oldPayments,
+      }),
+    });
+    await txn.delete(
+      'receipt_allocations',
+      where: 'receipt_id = ? AND sale_id = ?',
+      whereArgs: [receiptId, saleId],
+    );
+    if (amount > 0) {
+      await txn.insert('receipt_allocations', {
+        'receipt_id': receiptId,
+        'sale_id': saleId,
+        'amount': amount,
+      });
+    }
+    await txn.update(
+      'customer_receipts',
+      {'total': total},
+      where: 'id = ?',
+      whereArgs: [receiptId],
+    );
+    await txn.delete(
+      'receipt_payments',
+      where: 'receipt_id = ?',
+      whereArgs: [receiptId],
+    );
+    await txn.delete(
+      'money_entries',
+      where: "customer_receipt_id = ? AND kind = 'receipt'",
+      whereArgs: [receiptId],
+    );
+    for (final entry in payments.entries) {
+      if (entry.value == 0) continue;
+      final accounts = await txn.query(
+        'money_accounts',
+        where: 'id = ? AND branch_id = ?',
+        whereArgs: [entry.key, receipt['branch_id']],
+      );
+      if (accounts.isEmpty) {
+        throw StateError('Choose a receipt account from its branch.');
+      }
+      await txn.insert('receipt_payments', {
+        'receipt_id': receiptId,
+        'account_id': entry.key,
+        'amount': entry.value,
+      });
+      await txn.insert('money_entries', {
+        'account_id': entry.key,
+        'kind': 'receipt',
+        'amount': entry.value,
+        'entry_date': receipt['payment_date'],
+        'note': 'Customer credit collection',
+        'created_at': receipt['created_at'],
+        'customer_receipt_id': receiptId,
+      });
+    }
+    for (final account in {
+      ...payments.keys,
+      ...oldPayments.map((p) => p['account_id'] as int),
+    }) {
+      final balance =
+          (await txn.rawQuery(
+                'SELECT COALESCE(SUM(amount), 0) AS n FROM money_entries WHERE account_id = ?',
+                [account],
+              )).single['n']
+              as int;
+      if (balance < 0 || balance > 9000000000000) {
+        throw StateError(
+          'The revised receipt would put an account outside its allowed balance.',
+        );
+      }
+    }
+  }
+
+  Future<void> _setEditedExchange(
+    Transaction txn,
+    int returnId,
+    int saleId,
+  ) async {
+    final valid = await txn.rawQuery(
+      """SELECT n.id FROM sale_returns r
+         JOIN sale_invoices o ON o.id = r.sale_id
+         JOIN sale_invoices n ON n.branch_id = r.branch_id
+           AND n.customer_id IS o.customer_id AND n.customer_name = o.customer_name
+         WHERE r.id = ? AND n.id = ? AND n.id != o.id
+           AND r.status = 'posted' AND n.status = 'posted' AND n.invoice_date >= r.return_date
+           AND NOT EXISTS (SELECT 1 FROM sale_exchange_links x WHERE x.replacement_sale_id = n.id)""",
+      [returnId, saleId],
+    );
+    if (valid.isEmpty) {
+      throw StateError(
+        'Choose an unused posted replacement invoice for the same customer and branch on or after the return date.',
+      );
+    }
+    await txn.insert('sale_exchange_links', {
+      'return_id': returnId,
+      'replacement_sale_id': saleId,
+      'linked_at': DateTime.now().toUtc().toIso8601String(),
+    });
+  }
+
+  Future<void> _postLinkedReturnEdits(
+    Transaction txn,
+    int saleId,
+    Map<
+      int,
+      ({Map<int, int> quantities, Map<int, int> refunds, Map<int, String> lots})
+    >
+    edits,
+    Map<int, int> exchanges,
+  ) async {
+    final products = {
+      for (final item in await txn.query(
+        'sale_items',
+        where: 'sale_id = ?',
+        whereArgs: [saleId],
+      ))
+        item['product_id'] as int: item['id'] as int,
+    };
+    final replacements = <int, int>{};
+    for (final entry in edits.entries) {
+      final id = entry.key;
+      final edit = entry.value;
+      final original = (await txn.query(
+        'sale_returns',
+        where: "id = ? AND sale_id = ? AND status = 'void'",
+        whereArgs: [id, saleId],
+      )).single;
+      if (edit.quantities.keys.any(
+        (product) => !products.containsKey(product),
+      )) {
+        throw StateError(
+          'A corrected return can only include products on the revised invoice.',
+        );
+      }
+      final revised = await _postSaleReturn(
+        txn,
+        saleId: saleId,
+        returnDate: original['return_date'] as String,
+        reason: original['reason'] as String,
+        employeeId: original['employee_id'] as int,
+        itemQuantities: edit.quantities.map(
+          (product, qty) => MapEntry(products[product]!, qty),
+        ),
+        refunds: [
+          for (final p in edit.refunds.entries)
+            if (p.value != 0) {'account_id': p.key, 'amount': p.value},
+        ],
+        trackedReturns: edit.lots.map(
+          (product, lots) => MapEntry(products[product]!, lots),
+        ),
+      );
+      await txn.update(
+        'sale_returns',
+        {'replacement_id': revised},
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+      replacements[id] = revised;
+    }
+    for (final entry in exchanges.entries) {
+      if (entry.value > 0) {
+        await _setEditedExchange(
+          txn,
+          replacements[entry.key] ?? entry.key,
+          entry.value,
+        );
+      }
+    }
+  }
+
+  Future<void> _applySaleEditResolutions(
+    Transaction txn,
+    int saleId,
+    Map<String, Set<int>> resolutions,
+  ) async {
+    if (resolutions.values.every((ids) => ids.isEmpty)) return;
+    final links = await _saleEditLinks(txn, saleId);
+    for (final entry in resolutions.entries) {
+      final valid = links[entry.key]?.map((r) => r['id'] as int).toSet();
+      if (valid == null || !valid.containsAll(entry.value)) {
+        throw StateError(
+          'Linked records changed. Reopen the review before saving.',
+        );
+      }
+    }
+    const reason = 'Reversed during confirmed invoice correction';
+    for (final id in resolutions['returns'] ?? const <int>{}) {
+      await _reverseSaleReturn(txn, id, reason);
+    }
+    for (final id in resolutions['receipts'] ?? const <int>{}) {
+      await _voidCustomerReceipt(txn, id, reason);
+    }
+    final unlink = {...?resolutions['returns'], ...?resolutions['exchanges']};
+    for (final id in unlink) {
+      await txn.delete(
+        'sale_exchange_links',
+        where: 'return_id = ?',
+        whereArgs: [id],
+      );
+    }
+  }
+
+  Future<void> _archiveVoidedReturnLines(Transaction txn, int saleId) async {
+    final voided = await txn.query(
+      'sale_returns',
+      columns: ['id'],
+      where: "sale_id = ? AND status = 'void'",
+      whereArgs: [saleId],
+    );
+    for (final row in voided) {
+      final id = row['id'] as int;
+      final items = await txn.query(
+        'sale_return_items',
+        where: 'return_id = ?',
+        whereArgs: [id],
+        orderBy: 'sale_item_id',
+      );
+      if (items.isEmpty) continue;
+      final lots = await _saleReturnLots(txn, id);
+      await txn.insert('app_settings', {
+        'key': 'sale_edit_void_return:$id',
+        'value': jsonEncode({'items': items, 'lots': lots}),
+      });
+      await txn.delete(
+        'return_lot_allocations',
+        where: 'return_id = ?',
+        whereArgs: [id],
+      );
+      await txn.delete(
+        'sale_return_items',
+        where: 'return_id = ?',
+        whereArgs: [id],
+      );
+    }
+  }
+
   Future<int> confirmSaleDraft({
     required int draftId,
     required int revision,
@@ -4598,6 +5094,20 @@ class AppDatabase {
     required List<Map<String, int>> payments,
     int? customerIdOverride,
     bool saveNewCustomer = false,
+    Map<String, Set<int>> linkedResolutions = const {},
+    Map<int, ({int amount, Map<int, int> payments})> linkedReceiptEdits =
+        const {},
+    Map<
+          int,
+          ({
+            Map<int, int> quantities,
+            Map<int, int> refunds,
+            Map<int, String> lots,
+          })
+        >
+        linkedReturnEdits =
+        const {},
+    Map<int, int> linkedExchangeEdits = const {},
   }) async {
     final date = DateTime.tryParse(paymentDate);
     if (date == null ||
@@ -4624,6 +5134,19 @@ class AppDatabase {
         whereArgs: [draftId],
       );
       if (posted.isNotEmpty) return posted.single['id'] as int;
+      final completedEdit = await txn.query(
+        'app_settings',
+        columns: ['value'],
+        where: 'key = ?',
+        whereArgs: ['sale_edit_done:$draftId'],
+      );
+      if (completedEdit.isNotEmpty) {
+        final id = int.tryParse(completedEdit.single['value'] as String);
+        if (id == null) {
+          throw StateError('Invoice changed. Reopen it before editing.');
+        }
+        return id;
+      }
       final rows = await txn.query(
         'sale_drafts',
         where: 'id = ? AND revision = ?',
@@ -4633,14 +5156,52 @@ class AppDatabase {
         throw StateError('Draft changed. Reopen it before confirming.');
       }
       final d = rows.single;
-      if (d['correction_source_sale_id'] != null) {
-        await _voidSaleInvoice(
-          txn,
-          d['correction_source_sale_id'] as int,
-          'Edited using voucher unlock',
-        );
-      }
       final branchId = d['branch_id'] as int;
+      final sourceId = d['correction_source_sale_id'] as int?;
+      if (linkedResolutions.isNotEmpty) {
+        if (sourceId == null) {
+          throw StateError('Linked corrections require an existing invoice.');
+        }
+        await _applySaleEditResolutions(txn, sourceId, linkedResolutions);
+      }
+      if (linkedReceiptEdits.isNotEmpty ||
+          linkedReturnEdits.isNotEmpty ||
+          linkedExchangeEdits.isNotEmpty) {
+        if (sourceId == null) {
+          throw StateError('Linked corrections require an existing invoice.');
+        }
+        final valid = await _saleEditLinks(txn, sourceId);
+        final receiptIds = valid['receipts']!.map((r) => r['id']).toSet();
+        if (!receiptIds.containsAll(linkedReceiptEdits.keys) ||
+            !(linkedResolutions['returns'] ?? const <int>{}).containsAll(
+              linkedReturnEdits.keys,
+            ) ||
+            !{
+              ...?linkedResolutions['returns'],
+              ...?linkedResolutions['exchanges'],
+            }.containsAll(linkedExchangeEdits.keys)) {
+          throw StateError(
+            'Linked records changed. Reopen the review before saving.',
+          );
+        }
+        for (final e in linkedReceiptEdits.entries) {
+          await _reviseSaleReceipt(
+            txn,
+            e.key,
+            sourceId,
+            e.value.amount,
+            e.value.payments,
+            draftId,
+          );
+        }
+      }
+      final source = sourceId == null
+          ? null
+          : await _preparePostedSaleEdit(
+              txn,
+              saleId: sourceId,
+              draftId: draftId,
+            );
       final staff = await txn.query(
         'employees',
         where: 'id = ? AND default_branch_id = ? AND active = 1',
@@ -4694,7 +5255,13 @@ class AppDatabase {
           'Payment exceeds total. Enter net payment after change.',
         );
       }
-      final due = total - paid;
+      final allocated = source?['edit_allocated'] as int? ?? 0;
+      final due = total - paid - allocated;
+      if (due < 0) {
+        throw StateError(
+          'Payments already allocated exceed the revised invoice total. Correct the customer receipt allocation first.',
+        );
+      }
       int? customerId = customerIdOverride ?? d['customer_id'] as int?;
       final now = DateTime.now().toUtc().toIso8601String();
       if (due > 0 && customerId == null) {
@@ -4721,6 +5288,63 @@ class AppDatabase {
         );
         if (c.isEmpty) throw StateError('Customer not found.');
       }
+      final retained =
+          source?['edit_retained'] as List<Map<String, Object?>>? ?? [];
+      if (source != null) {
+        final activeReturns =
+            source['edit_returns'] as List<Map<String, Object?>>;
+        if (allocated > 0 &&
+            (source['branch_id'] != branchId ||
+                source['customer_id'] != customerId)) {
+          throw StateError(
+            'Correct the linked customer receipt before changing its customer or branch.',
+          );
+        }
+        if (activeReturns.isNotEmpty &&
+            (due != 0 ||
+                source['branch_id'] != branchId ||
+                activeReturns.any(
+                  (r) =>
+                      (r['return_date'] as String).compareTo(
+                        d['invoice_date'] as String,
+                      ) <
+                      0,
+                ))) {
+          throw StateError(
+            'A retained return requires a fully paid invoice in the same branch, dated on or before the return.',
+          );
+        }
+        final originalItems =
+            source['edit_original_items'] as List<Map<String, Object?>>;
+        final oldNets = SaleInvoiceDetails.lineNets(
+          originalItems,
+          source['total'] as int,
+        );
+        final retainedProducts = retained.map((r) => r['product_id']).toSet();
+        final orderedItems = [
+          for (final old in retained)
+            ...items.where((i) => i['product_id'] == old['product_id']),
+          ...items.where((i) => !retainedProducts.contains(i['product_id'])),
+        ];
+        final newNets = SaleInvoiceDetails.lineNets(orderedItems, total);
+        for (final old in retained) {
+          final target = orderedItems.indexWhere(
+            (i) => i['product_id'] == old['product_id'],
+          );
+          final originalIndex = originalItems.indexWhere(
+            (i) => i['id'] == old['id'],
+          );
+          if (target < 0 ||
+              orderedItems[target]['qty'] != old['qty'] ||
+              orderedItems[target]['tracking_json'] != old['tracking_json'] ||
+              branchId != source['branch_id'] ||
+              newNets[target] != oldNets[originalIndex]) {
+            throw StateError(
+              'This item is referenced by a return. Correct the return before changing its quantity, tracking or refund basis.',
+            );
+          }
+        }
+      }
       final business = (await txn.query(
         'business_profile',
         where: 'id = 1',
@@ -4730,7 +5354,7 @@ class AppDatabase {
         where: 'id = ?',
         whereArgs: [branchId],
       )).single;
-      final saleId = await txn.insert('sale_invoices', {
+      final invoiceValues = <String, Object?>{
         'draft_id': draftId,
         'branch_id': branchId,
         'business_name': business['name'],
@@ -4753,11 +5377,52 @@ class AppDatabase {
         'voucher_discount_amount': d['voucher_discount_amount'],
         'remark': d['remark'],
         'total': total,
-        'paid': paid,
+        'paid': paid + allocated,
         'balance_due': due,
-        'confirmed_at': now,
-      });
+        'confirmed_at': source?['confirmed_at'] ?? now,
+      };
+      final int saleId;
+      if (source == null) {
+        saleId = await txn.insert('sale_invoices', invoiceValues);
+      } else {
+        saleId = sourceId!;
+        // Keep the original invoice identity and branch prefix for reprints.
+        invoiceValues.remove('draft_id');
+        invoiceValues['branch_code_snapshot'] = source['branch_code_snapshot'];
+        final updated = await txn.update(
+          'sale_invoices',
+          invoiceValues,
+          where: "id = ? AND status = 'posted'",
+          whereArgs: [saleId],
+        );
+        if (updated != 1) throw StateError('Invoice changed. Reload.');
+        await txn.update(
+          'sale_drafts',
+          {
+            'discount_type': d['discount_type'],
+            'discount_value': d['discount_value'],
+          },
+          where: 'id = ?',
+          whereArgs: [source['draft_id']],
+        );
+      }
       for (final item in items) {
+        final retainedItem = retained
+            .where((r) => r['product_id'] == item['product_id'])
+            .firstOrNull;
+        if (retainedItem != null) {
+          await txn.update(
+            'sale_items',
+            {
+              'price': item['price'],
+              'amount': item['amount'],
+              'item_discount': item['item_discount'],
+            },
+            where: 'id = ?',
+            whereArgs: [retainedItem['id']],
+          );
+          continue;
+        }
         final count = await txn.rawUpdate(
           '''
           UPDATE branch_stocks SET stock = stock - ?
@@ -4823,13 +5488,61 @@ class AppDatabase {
           'sale_id': saleId,
         });
       }
-      if (d['correction_source_sale_id'] != null) {
-        await txn.update(
-          'sale_invoices',
-          {'replacement_id': saleId},
-          where: "id = ? AND status = 'void' AND replacement_id IS NULL",
-          whereArgs: [d['correction_source_sale_id']],
+      if (source != null) {
+        await _postLinkedReturnEdits(
+          txn,
+          saleId,
+          linkedReturnEdits,
+          linkedExchangeEdits,
         );
+        final brokenExchange = await txn.rawQuery(
+          """SELECT x.return_id FROM sale_exchange_links x
+          JOIN sale_returns r ON r.id = x.return_id
+          JOIN sale_invoices o ON o.id = r.sale_id
+          JOIN sale_invoices n ON n.id = x.replacement_sale_id
+          WHERE (o.id = ? OR n.id = ?) AND NOT (
+            n.branch_id = r.branch_id AND n.customer_id IS o.customer_id
+            AND n.customer_name = o.customer_name AND n.invoice_date >= r.return_date
+          )""",
+          [saleId, saleId],
+        );
+        if (brokenExchange.isNotEmpty) {
+          throw StateError(
+            'Correct the exchange link before changing its customer, branch or date.',
+          );
+        }
+        for (final accountId in source['edit_accounts'] as List<int>) {
+          final balance = await txn.rawQuery(
+            'SELECT COALESCE(SUM(amount), 0) AS n FROM money_entries WHERE account_id = ?',
+            [accountId],
+          );
+          if ((balance.single['n'] as int) < 0) {
+            throw StateError(
+              'Insufficient account balance after invoice edit.',
+            );
+          }
+        }
+        // Mark all other open drafts for this invoice stale. They must never
+        // overwrite an edit based on an older invoice snapshot.
+        final drafts = await txn.query(
+          'sale_drafts',
+          columns: ['id'],
+          where: 'correction_source_sale_id = ? AND NOT EXISTS (SELECT 1 FROM sale_invoices i WHERE i.draft_id = sale_drafts.id)',
+          whereArgs: [saleId],
+        );
+        for (final row in drafts) {
+          final other = row['id'] as int;
+          await txn.insert('app_settings', {
+            'key': 'sale_edit_done:$other',
+            'value': other == draftId ? '$saleId' : 'stale',
+          }, conflictAlgorithm: ConflictAlgorithm.ignore);
+          await txn.delete(
+            'sale_recovery',
+            where: 'source_draft_id = ?',
+            whereArgs: [other],
+          );
+          await txn.delete('sale_drafts', where: 'id = ?', whereArgs: [other]);
+        }
       }
       await txn.delete(
         'sale_recovery',

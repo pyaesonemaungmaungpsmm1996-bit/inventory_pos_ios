@@ -10,6 +10,25 @@ class VoucherCode {
   static const kinds = ['INV', 'RET', 'PUR', 'EXP'];
   static String kindOf(Map<String, Object?> snapshot) =>
       snapshot['document_prefix'] as String? ?? 'INV';
+  static String displayNumber(Map<String, Object?> snapshot) {
+    final kind = kindOf(snapshot);
+    final id = snapshot['id'];
+    final original =
+        snapshot['document_number'] as String? ??
+        '$kind-${id.toString().padLeft(6, '0')}';
+    if (kind != 'INV') return original;
+    final snapshotCode =
+        snapshot['branch_code_snapshot']?.toString().trim() ?? '';
+    final branch = snapshot['branch_id'];
+    final prefix = snapshotCode.isNotEmpty
+        ? snapshotCode
+        : branch is int && branch > 0
+        ? 'BR${branch.toString().padLeft(2, '0')}'
+        : 'BR00';
+    final suffix = RegExp(r'[0-9]+$').stringMatch(original) ?? id.toString();
+    return '$prefix-${suffix.padLeft(6, '0')}';
+  }
+
   static String digest(Map<String, Object?> snapshot) {
     final stable = {
       'kind': kindOf(snapshot),

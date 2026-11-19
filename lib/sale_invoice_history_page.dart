@@ -1,3 +1,5 @@
+import 'voucher_code.dart';
+
 import 'package:sqflite/sqflite.dart';
 
 import 'contact_search.dart';
@@ -14,9 +16,10 @@ import 'sale_invoices_page.dart';
 class SaleInvoiceHistoryRepository {
   static Future<List<Map<String, Object?>>> list(DatabaseExecutor db) =>
       db.rawQuery('''
- SELECT * FROM (SELECT s.id,s.branch_id,b.name branch_name,s.customer_id,s.customer_name,s.customer_phone,s.invoice_date,s.total,s.balance_due,s.currency_code,s.currency_digits,s.status,'invoice' record_kind,s.confirmed_at updated_at FROM sale_invoices s JOIN branches b ON b.id=s.branch_id
+ SELECT * FROM (SELECT s.id,s.branch_id,b.name branch_name,s.customer_id,s.customer_name,s.customer_phone,s.invoice_date,s.total,s.balance_due,s.currency_code,s.currency_digits,s.status,s.branch_code_snapshot,'invoice' record_kind,s.confirmed_at updated_at FROM sale_invoices s JOIN branches b ON b.id=s.branch_id
  UNION ALL
- SELECT d.id,d.branch_id,b.name branch_name,d.customer_id,d.customer_name,d.customer_phone,d.invoice_date,d.total,0 balance_due,d.currency_code,d.currency_digits,'draft' status,'draft' record_kind,d.updated_at FROM sale_drafts d JOIN branches b ON b.id=d.branch_id WHERE NOT EXISTS(SELECT 1 FROM sale_invoices s WHERE s.draft_id=d.id)
+ SELECT d.id,d.branch_id,b.name branch_name,d.customer_id,d.customer_name,d.customer_phone,d.invoice_date,d.total,0 balance_due,d.currency_code,d.currency_digits,'draft' status,NULL branch_code_snapshot,'draft' record_kind,d.updated_at FROM sale_drafts d JOIN branches b ON b.id=d.branch_id WHERE NOT EXISTS(SELECT 1 FROM sale_invoices s WHERE s.draft_id=d.id)
+ AND d.correction_source_sale_id IS NULL
  ) ORDER BY updated_at DESC,id DESC
  ''');
 }
@@ -79,9 +82,9 @@ class _SaleInvoiceHistoryPageState extends State<SaleInvoiceHistoryPage> {
     }
   }
 
-  String number(Map row) =>
-      (row['record_kind'] == 'draft' ? 'DRAFT-' : 'INV-') +
-      row['id'].toString().padLeft(6, '0');
+  String number(Map<String, Object?> row) => row['record_kind'] == 'draft'
+      ? 'DRAFT-${row['id'].toString().padLeft(6, '0')}'
+      : VoucherCode.displayNumber(row);
   Future<void> open(Map<String, Object?> row) async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
@@ -108,6 +111,8 @@ class _SaleInvoiceHistoryPageState extends State<SaleInvoiceHistoryPage> {
               (q.isEmpty ||
                   [
                     number(r),
+                    if (r['record_kind'] == 'invoice')
+                      'INV-${r['id'].toString().padLeft(6, '0')}',
                     r['customer_name'],
                     r['customer_phone'],
                     ContactSearch.code(r['customer_id']),
@@ -147,7 +152,6 @@ class _SaleInvoiceHistoryPageState extends State<SaleInvoiceHistoryPage> {
                   onChanged: (v) => setState(() => branch = v),
                 ),
                 DropdownButtonFormField<String>(
-                  isExpanded: true,
                   initialValue: filter,
                   decoration: InputDecoration(
                     labelText: t('Invoice status', 'ဘောင်ချာအခြေအနေ'),
