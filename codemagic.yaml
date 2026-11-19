@@ -1,6 +1,6 @@
 workflows:
   toe-pwar-ios-unsigned:
-    name: Toe Pwar POS iPhone - unsigned build
+    name: Toe Pwar POS iPhone - release IPA
     instance_type: mac_mini_m2
     max_build_duration: 30
     environment:
@@ -8,12 +8,16 @@ workflows:
       xcode: latest
       cocoapods: default
     scripts:
-      - name: Check Flutter and fetch dependencies
+      - name: Fetch dependencies
+        script: flutter pub get --enforce-lockfile
+      - name: Build iPhone release without signing
+        script: flutter build ios --release --no-codesign --no-pub
+      - name: Package IPA
         script: |
-          flutter --version
-          flutter pub get --enforce-lockfile
-      - name: Build iPhone app without signing
-        script: flutter build ios --debug --no-codesign --no-pub
+          set -e
+          mkdir -p build/ios/package/Payload
+          ditto build/ios/iphoneos/Runner.app build/ios/package/Payload/Runner.app
+          ditto -c -k --keepParent build/ios/package/Payload build/ios/ToePwarPOS.ipa
     artifacts:
-      - build/ios/iphoneos/Runner.app
+      - build/ios/ToePwarPOS.ipa
       - /tmp/xcodebuild_logs/*.log
