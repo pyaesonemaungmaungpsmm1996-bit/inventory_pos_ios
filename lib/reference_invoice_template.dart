@@ -1,0 +1,371 @@
+part of 'print_template.dart';
+
+/// Editable counterpart of the original mobile stationery: logo and heading,
+/// branch block, invoice details/QR, item table, remark/totals and signatures.
+PrintTemplate originalMobileInvoiceTemplate({PrintTemplate? previous}) {
+  final base = referenceInvoiceTemplate(previous: previous);
+  return base.copyWith(
+    name: 'Original mobile A4 voucher',
+    elements: [
+      for (final e in base.elements)
+        if (!e.id.startsWith('check-') && !e.id.startsWith('device-'))
+          switch (e.id) {
+            'logo' => e.withValues({'width': 48.0, 'height': 32.0}),
+            'business' => e.withValues({
+              'x': 60.0,
+              'y': 10.0,
+              'width': 140.0,
+              'height': 12.0,
+              'align': 'center',
+            }),
+            'subtitle' => e.withValues({
+              'x': 60.0,
+              'y': 23.0,
+              'width': 140.0,
+              'height': 8.0,
+              'align': 'center',
+            }),
+            'address-left' ||
+            'address-right' => e.withValues({'height': 14.0, 'fontSize': 8.5}),
+            'address-divider' => e.withValues({'height': 14.0}),
+            'header-rule' => e.withValues({'y': 48.0}),
+            'title' => e.withValues({'y': 51.0, 'fill': 0xffeeeeee}),
+            'date' => e.withValues({'y': 51.0}),
+            'customer' => e.withValues({'y': 62.0}),
+            'invoice-info' => e.withValues({'y': 62.0}),
+            'voucher-qr' => e.withValues({'y': 61.0}),
+            'items' => e.withValues({
+              'y': 86.0,
+              'height': 90.0,
+              'rowHeight': 9.0,
+              'columns': [
+                for (final c in e.columns)
+                  if (c.title != 'Unit') c.toJson(),
+              ],
+            }),
+            'remark-box' => e.withValues({
+              'y': 180.0,
+              'width': 122.0,
+              'height': 35.0,
+            }),
+            'remark' => e.withValues({
+              'y': 182.0,
+              'width': 118.0,
+              'height': 31.0,
+            }),
+            _ => e,
+          },
+    ],
+  );
+}
+
+/// Editable A4 stationery based on the user's supplied printed voucher.
+/// Business identity and branch addresses remain data bindings, not sample data.
+PrintTemplate referenceInvoiceTemplate({PrintTemplate? previous}) {
+  final oldLogo = previous?.elements
+      .where((e) => e.id == 'logo' && e.kind == 'image')
+      .firstOrNull;
+  PrintElement text(
+    String id,
+    num x,
+    num y,
+    num w,
+    num h,
+    String value, {
+    double size = 10,
+    bool bold = false,
+    String align = 'left',
+    bool last = false,
+  }) => PrintElement(
+    id: id,
+    kind: 'text',
+    x: x.toDouble(),
+    y: y.toDouble(),
+    width: w.toDouble(),
+    height: h.toDouble(),
+    text: value,
+    fontSize: size,
+    bold: bold,
+    align: align,
+    lastPageOnly: last,
+  );
+  PrintElement box(String id, num x, num y, num w, num h) => PrintElement(
+    id: id,
+    kind: 'box',
+    x: x.toDouble(),
+    y: y.toDouble(),
+    width: w.toDouble(),
+    height: h.toDouble(),
+    border: .2,
+    lastPageOnly: true,
+  );
+  PrintElement rule(String id, num x, num y, num w) => PrintElement(
+    id: id,
+    kind: 'line',
+    x: x.toDouble(),
+    y: y.toDouble(),
+    width: w.toDouble(),
+    height: .25,
+  );
+  return PrintTemplate(
+    name: 'Reference A4 sale voucher',
+    elements: [
+      PrintElement(
+        id: 'logo',
+        kind: 'image',
+        x: 10,
+        y: 10,
+        width: 40,
+        height: 34,
+        imageBase64: oldLogo?.imageBase64 ?? '',
+      ),
+      text('business', 54, 8, 146, 12, '{business.name}', size: 23, bold: true),
+      text(
+        'subtitle',
+        54,
+        21,
+        146,
+        8,
+        '{business.subtitle}',
+        size: 15,
+        bold: true,
+      ),
+      text('address-left', 54, 32, 70, 23, '{branch.left}', size: 9),
+      rule('address-divider', 127, 32, .25).withValues({'height': 23.0}),
+      text('address-right', 131, 32, 69, 23, '{branch.right}', size: 9),
+      rule('header-rule', 10, 58, 190),
+      text('title', 10, 61, 125, 8, '{invoice.title}', size: 13, bold: true),
+      text(
+        'date',
+        143,
+        61,
+        57,
+        8,
+        'Date: {invoice.date}',
+        size: 9,
+        align: 'right',
+      ),
+      text(
+        'customer',
+        10,
+        71,
+        88,
+        21,
+        'Customer: {customer.name}\nAddress: {customer.address}\nPhone: {customer.phone}',
+        size: 9,
+      ),
+      text(
+        'invoice-info',
+        102,
+        71,
+        69,
+        21,
+        'Invoice No.: {invoice.number}\nSalesperson: {employee.name}',
+        size: 9,
+      ),
+      const PrintElement(
+        id: 'voucher-qr',
+        kind: 'barcode',
+        x: 177,
+        y: 70,
+        width: 22,
+        height: 22,
+        qr: true,
+        text: '{invoice.qr}',
+      ),
+      const PrintElement(
+        id: 'items',
+        kind: 'table',
+        x: 10,
+        y: 96,
+        width: 190,
+        height: 80,
+        border: .2,
+        fontSize: 9,
+        rowHeight: 12,
+        headerHeight: 8,
+        columns: [
+          PrintColumn(
+            title: 'No.',
+            expression: '{item.no}',
+            weight: .7,
+            align: 'center',
+          ),
+          PrintColumn(
+            title: 'Item name',
+            expression: '{item.description}',
+            weight: 7,
+          ),
+          PrintColumn(
+            title: 'Qty',
+            expression: '{item.qty}',
+            weight: .8,
+            align: 'right',
+          ),
+          PrintColumn(
+            title: 'Unit',
+            expression: '{item.unit}',
+            weight: .8,
+            align: 'center',
+          ),
+          PrintColumn(
+            title: 'Price',
+            expression: '{item.unit_price}',
+            weight: 1.8,
+            align: 'right',
+          ),
+          PrintColumn(
+            title: 'Discount',
+            expression: '{item.discount}',
+            weight: 1.6,
+            align: 'right',
+          ),
+          PrintColumn(
+            title: 'Amount',
+            expression: '{item.amount}',
+            weight: 2,
+            align: 'right',
+          ),
+        ],
+      ),
+      for (var i = 0; i < 6; i++) ...[
+        box('check-$i', 13 + (i ~/ 3) * 36, 183 + (i % 3) * 9, 5, 5),
+        text(
+          'check-label-$i',
+          21 + (i ~/ 3) * 36,
+          183 + (i % 3) * 9,
+          27,
+          6,
+          const [
+            'Display',
+            'Wifi',
+            'Charging',
+            'Speaker',
+            'Camera',
+            'Ports',
+          ][i],
+          size: 9,
+          last: true,
+        ),
+      ],
+      for (var i = 0; i < 3; i++) ...[
+        box('device-field-$i', 88, 183 + i * 9, 15, 6),
+        text(
+          'device-label-$i',
+          106,
+          183 + i * 9,
+          24,
+          6,
+          const ['Memory', 'SSD', 'Keyboard'][i],
+          size: 9,
+          last: true,
+        ),
+      ],
+      for (var i = 0; i < 5; i++) ...[
+        box(
+          'total-label-box-$i',
+          132,
+          180 + i * 7,
+          35,
+          7,
+        ).withValues({'lastPageOnly': true}),
+        box(
+          'total-value-box-$i',
+          167,
+          180 + i * 7,
+          33,
+          7,
+        ).withValues({'lastPageOnly': true}),
+        text(
+          'total-label-$i',
+          134,
+          181 + i * 7,
+          31,
+          5,
+          const [
+            'Subtotal',
+            'Discount',
+            'Total amount',
+            'Cash receive',
+            'Balance',
+          ][i],
+          size: 9,
+          bold: i >= 2,
+          last: true,
+        ),
+        text(
+          'total-value-$i',
+          168,
+          181 + i * 7,
+          31,
+          5,
+          const [
+            '{totals.subtotal}',
+            '{totals.discount}',
+            '{totals.total}',
+            '{totals.paid}',
+            '{totals.balance}',
+          ][i],
+          size: 9,
+          bold: i >= 2,
+          align: 'right',
+          last: true,
+        ),
+      ],
+      box('remark-box', 10, 219, 190, 20).withValues({'lastPageOnly': true}),
+      text(
+        'remark',
+        12,
+        221,
+        186,
+        16,
+        'Remark: {invoice.remark}',
+        size: 9,
+        last: true,
+      ),
+      for (var i = 0; i < 3; i++) ...[
+        rule(
+          'signature-rule-$i',
+          13 + i * 65,
+          272,
+          56,
+        ).withValues({'lastPageOnly': true}),
+        text(
+          'signature-$i',
+          13 + i * 65,
+          275,
+          56,
+          7,
+          const [
+            'Customer signature',
+            'Cashier signature',
+            'Authorized signature',
+          ][i],
+          size: 9,
+          align: 'center',
+          last: true,
+        ),
+      ],
+      text('footer', 10, 284, 190, 6, '{footer}', size: 8, align: 'center'),
+      text(
+        'printed',
+        10,
+        291,
+        140,
+        4,
+        'Print date: {invoice.recorded}',
+        size: 7,
+      ),
+      text(
+        'pages',
+        166,
+        291,
+        34,
+        4,
+        'Page {page.number} of {page.count}',
+        size: 7,
+        align: 'right',
+      ),
+    ],
+  );
+}
