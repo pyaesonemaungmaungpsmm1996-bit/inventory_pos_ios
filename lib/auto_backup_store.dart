@@ -12,7 +12,7 @@ class AutoBackupStore {
       p.join(await getDatabasesPath(), 'tp_auto_backup_control.db'),
       version: 1,
       singleInstance: false,
-      onConfigure: (db) => db.execute('PRAGMA busy_timeout = 2000'),
+      onConfigure: (db) => db.rawQuery('PRAGMA busy_timeout = 2000'),
       onCreate: (db, _) async {
         await db.execute(
           'CREATE TABLE control (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL)',

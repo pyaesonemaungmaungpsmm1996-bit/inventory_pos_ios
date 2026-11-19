@@ -17,7 +17,7 @@ class BackupGate {
       singleInstance: false,
     );
     try {
-      await db.execute('PRAGMA busy_timeout = 0');
+      await db.rawQuery('PRAGMA busy_timeout = 0');
       return await db.transaction(
         (_) => runZoned(
           body,

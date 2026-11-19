@@ -13,7 +13,7 @@ class SubscriptionRuntime {
       p.join(await getDatabasesPath(), 'tp_subscription_runtime.db'),
       version: 1,
       singleInstance: false,
-      onConfigure: (db) => db.execute('PRAGMA busy_timeout=3000'),
+      onConfigure: (db) => db.rawQuery('PRAGMA busy_timeout=3000'),
       onCreate: (db, _) async {
         await db.execute(
           'CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL)',
