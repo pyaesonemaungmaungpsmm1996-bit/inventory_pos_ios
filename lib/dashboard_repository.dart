@@ -2,6 +2,7 @@ import 'package:sqflite/sqflite.dart';
 
 import 'app_database.dart';
 import 'app_datetime.dart';
+import 'live_sale_sync.dart';
 
 /// Read-only branch snapshots. Does not change the sale/default branch or license.
 class DashboardRepository {
@@ -48,11 +49,20 @@ class DashboardRepository {
       [branch],
     );
     final latest = await recent(txn, branch);
+    final prefix = LiveSaleSync.localIdentityPrefix;
+    final saleIdentities = prefix == null
+        ? <Map<String, Object?>>[]
+        : await txn.rawQuery(
+            'SELECT v.value live_identity FROM sale_invoices s '
+            'JOIN app_settings v ON v.key = ? || s.draft_id WHERE s.branch_id = ?',
+            [prefix, branch],
+          );
     return {
       'sales': sales.single['amount'],
       'expenses': expenses.single['amount'],
       'balance': balance.single['amount'],
       'recent': latest,
+      'sale_identities': saleIdentities,
       'loaded_at': DateTime.now().toUtc().toIso8601String(),
     };
   });

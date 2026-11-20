@@ -2094,7 +2094,9 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
             : editLine(selectedLine.clamp(0, lines.length - 1)),
       },
       child: PopScope<_DraftResult>(
-        canPop: _allowPop && !saving,
+        canPop:
+            !saving &&
+            (_allowPop || (AppCapabilities.windows && !_dirty && !_finalizing)),
         onPopInvokedWithResult: (didPop, result) {
           if (!didPop) unawaited(_leave());
         },

@@ -10,6 +10,8 @@ import 'app_database.dart';
 import 'app_datetime.dart';
 import 'app_language.dart';
 import 'dashboard_repository.dart';
+import 'live_sale_sync.dart';
+import 'sale_invoice_history_page.dart';
 import 'online_account_service.dart';
 import 'pos_ui.dart';
 import 'subscription_runtime.dart';
@@ -84,13 +86,56 @@ class DashboardPageState extends State<DashboardPage> {
   void initState() {
     super.initState();
     SubscriptionRuntime.changed.addListener(licenseChanged);
+    LiveSaleSync.feed.addListener(_liveSalesChanged);
     reload();
   }
 
   @override
   void dispose() {
     SubscriptionRuntime.changed.removeListener(licenseChanged);
+    LiveSaleSync.feed.removeListener(_liveSalesChanged);
     super.dispose();
+  }
+
+  void _liveSalesChanged() {
+    if (mounted) setState(() {});
+  }
+
+  List<Map<String, Object?>> _recentWithSyncedSales(
+    List<Map<String, Object?>> local,
+    Map<String, Object?>? overview,
+  ) {
+    if (branch == null || overview == null) return local;
+    final updates = LiveSaleSync.feed.value;
+    final identities =
+        (overview['sale_identities'] as List?)?.cast<Map<String, Object?>>() ??
+        [];
+    final remote = SaleInvoiceHistoryRepository.mergeSales(identities, branches)
+        .where(
+          (sale) =>
+              sale['live_voucher'] != null &&
+              sale['branch_id'] == branch &&
+              sale['status'] == 'posted' &&
+              sale['total'] is int,
+        )
+        .map(
+          (sale) => <String, Object?>{
+            'kind': 'sale',
+            'live_voucher': sale['live_voucher'],
+            'live_number': sale['live_number'],
+            'live_account': updates.account,
+            'amount': sale['total'],
+            'status': sale['status'],
+            'recorded_at': sale['updated_at'],
+          },
+        );
+    final combined = [...local, ...remote]
+      ..sort((a, b) {
+        final first = b['recorded_at']?.toString() ?? '';
+        final second = a['recorded_at']?.toString() ?? '';
+        return first.compareTo(second);
+      });
+    return combined.take(5).toList();
   }
 
   void licenseChanged() {
@@ -341,8 +386,10 @@ class DashboardPageState extends State<DashboardPage> {
   @override
   Widget build(BuildContext context) {
     final current = data;
-    final recent =
-        (current?['recent'] as List?)?.cast<Map<String, Object?>>() ?? [];
+    final recent = _recentWithSyncedSales(
+      (current?['recent'] as List?)?.cast<Map<String, Object?>>() ?? [],
+      current,
+    );
     if (AppCapabilities.windows) return desktopOverview(current, recent);
     final scaled = MediaQuery.textScalerOf(context).scale(1) > 1.3;
     return RefreshIndicator(
@@ -480,6 +527,14 @@ class DashboardPageState extends State<DashboardPage> {
                 },
               ),
             ),
+            if (recent.any((row) => row['live_voucher'] != null))
+              Text(
+                t(
+                  'Summary totals are from this device.',
+                  'စုစုပေါင်းငွေစာရင်းသည် ဤစက်၏ စာရင်းဖြစ်သည်။',
+                ),
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
             Text(
               '${t('Updated', 'နောက်ဆုံးစစ်ချိန်')}: ${AppDateTime.format(current['loaded_at'])}',
               style: Theme.of(context).textTheme.labelSmall,
@@ -634,7 +689,10 @@ class RecentTransactionTile extends StatelessWidget {
               : Icons.payments_outlined,
           size: 20,
         ),
-        title: Text('$prefix-${(row['id'] as int).toString().padLeft(6, '0')}'),
+        title: Text(
+          row['live_number'] as String? ??
+              '$prefix-${(row['id'] as int).toString().padLeft(6, '0')}',
+        ),
         subtitle: Text(
           '${AppDateTime.format(row['recorded_at'])}${row['status'] == 'void' ? ' · VOID' : ''}',
         ),

@@ -95,7 +95,11 @@ BEGIN
             VALUE "InternalName", "Toe Pwar POS" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 PSM IT Company. All rights reserved." "\0"
             VALUE "OriginalFilename", "toe_pwar_pos.exe" "\0"
+#ifdef TP_SYNC_DEV
+            VALUE "ProductName", "Toe Pwar POS Sync Dev" "\0"
+#else
             VALUE "ProductName", "Toe Pwar POS" "\0"
+#endif
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

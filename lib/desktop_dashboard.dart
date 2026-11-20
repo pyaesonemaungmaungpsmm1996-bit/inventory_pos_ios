@@ -243,11 +243,12 @@ extension _DesktopDashboard on DashboardPageState {
                 for (final row in recent)
                   [
                     Text(
-                      '${row['kind'] == 'sale'
-                          ? 'INV'
-                          : row['kind'] == 'purchase'
-                          ? 'PUR'
-                          : 'RCPT'}-${(row['id'] as int).toString().padLeft(6, '0')}',
+                      row['live_number'] as String? ??
+                          '${row['kind'] == 'sale'
+                              ? 'INV'
+                              : row['kind'] == 'purchase'
+                              ? 'PUR'
+                              : 'RCPT'}-${(row['id'] as int).toString().padLeft(6, '0')}',
                     ),
                     Text('${row['kind']}'),
                     Text(AppDateTime.format(row['recorded_at'])),
@@ -264,6 +265,14 @@ extension _DesktopDashboard on DashboardPageState {
               emptyText: t('No transactions yet.', 'မှတ်တမ်းမရှိသေးပါ။'),
             ),
           ),
+          if (recent.any((row) => row['live_voucher'] != null))
+            Text(
+              t(
+                'Summary totals are from this device.',
+                'စုစုပေါင်းငွေစာရင်းသည် ဤစက်၏ စာရင်းဖြစ်သည်။',
+              ),
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
           if (current != null)
             Text(
               '${t('Updated', 'နောက်ဆုံးတင်ချိန်')}: ${AppDateTime.format(current['loaded_at'])}',

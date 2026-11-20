@@ -1,4 +1,6 @@
 import 'live_sale_sync.dart';
+import 'sync_dev_profile.dart';
+import 'live_sales_page.dart';
 
 import 'batch_barcode_labels_page.dart';
 import 'sale_invoice_history_page.dart';
@@ -67,6 +69,7 @@ final settingsStorage = SharedPreferencesAsync();
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await SyncDevProfile.verify();
 
   try {
     final savedTheme = await settingsStorage.getString('theme_mode');
@@ -81,8 +84,10 @@ Future<void> main() async {
   }
   await AppLanguage.load();
   runApp(const _CurrencyBootstrap());
-  unawaited(AutoBackupScheduler.start());
-  LiveSaleSync.start(() => AppDatabase.instance.database);
+  if (!SyncDevProfile.enabled) {
+    unawaited(AutoBackupScheduler.start());
+    LiveSaleSync.start(() => AppDatabase.instance.database);
+  }
 }
 
 class _CurrencyBootstrap extends StatefulWidget {
@@ -415,7 +420,15 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> recentTransaction(Map<String, Object?> row, int branch) async {
-    if (row['kind'] == 'sale') {
+    final voucher = row['live_voucher'];
+    final account = row['live_account'];
+    if (voucher is String && account is String) {
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute(
+          builder: (_) => LiveVoucherPage(account: account, voucher: voucher),
+        ),
+      );
+    } else if (row['kind'] == 'sale') {
       await Navigator.of(context).push<void>(
         MaterialPageRoute(
           builder: (_) => ConfirmedSaleDetailPage(saleId: row['id'] as int),

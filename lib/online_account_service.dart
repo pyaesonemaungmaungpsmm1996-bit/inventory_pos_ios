@@ -1,4 +1,5 @@
 import 'cloud_proxy_client.dart';
+import 'sync_dev_profile.dart';
 
 import 'dart:math';
 
@@ -6,9 +7,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class OnlineAccounts {
-  static const url = 'https://hylxyyzwsppaufzmqcbg.supabase.co';
+  static const url = SyncDevProfile.enabled
+      ? SyncDevProfile.url
+      : 'https://hylxyyzwsppaufzmqcbg.supabase.co';
   // Client-side publishable key. Never put a secret/service-role key here.
-  static const key = 'sb_publishable_LofdBSh-6F93h-ypBMZ7NA_7wPemrNo';
+  static const key = SyncDevProfile.enabled
+      ? SyncDevProfile.key
+      : 'sb_publishable_LofdBSh-6F93h-ypBMZ7NA_7wPemrNo';
   static Future<void>? _ready;
   static Future<void> initialize() => _ready ??= _initialize();
   static Future<void> _initialize() async {
@@ -16,7 +21,7 @@ class OnlineAccounts {
       await Supabase.initialize(
         url: url,
         publishableKey: key,
-        httpClient: CloudProxyClient.forBuild(),
+        httpClient: SyncDevProfile.enabled ? null : CloudProxyClient.forBuild(),
       );
     } catch (_) {
       _ready = null;
