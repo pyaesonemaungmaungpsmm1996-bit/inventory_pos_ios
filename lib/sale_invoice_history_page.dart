@@ -1,3 +1,5 @@
+import 'live_sales_page.dart';
+
 import 'voucher_code.dart';
 
 import 'package:sqflite/sqflite.dart';
@@ -189,6 +191,13 @@ class _SaleInvoiceHistoryPageState extends State<SaleInvoiceHistoryPage> {
                     fromDate = from;
                     toDate = to;
                   }),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => Navigator.of(context).push<void>(
+                    MaterialPageRoute(builder: (_) => const LiveSalesPage()),
+                  ),
+                  icon: const Icon(Icons.sync, size: 17),
+                  label: Text(t('Live sales', 'တိုက်ရိုက် အရောင်းစာရင်း')),
                 ),
                 OutlinedButton.icon(
                   onPressed: loading ? null : load,

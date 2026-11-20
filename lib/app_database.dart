@@ -1,3 +1,5 @@
+import 'live_sale_sync.dart';
+
 import 'purchase_zero_cost.dart';
 import 'backup_change_tracker.dart';
 import 'catalog_identity.dart';
@@ -1645,6 +1647,15 @@ class AppDatabase {
           whereArgs: [id],
         );
         break;
+    }
+    if (kind == 'sale') {
+      await LiveSaleSync.record(
+        txn,
+        origin: LiveSaleSync.origin,
+        draftId: rows.single['draft_id'] as int,
+        saleId: id,
+        removed: true,
+      );
     }
     final deleted = await txn.delete(
       table,
@@ -3491,7 +3502,8 @@ class AppDatabase {
         await VoucherPermissions.requireEditable();
       }
     }
-    return db.transaction((txn) async {
+    final liveSaleOrigin = LiveSaleSync.origin;
+    final result = await db.transaction((txn) async {
       if (id != null &&
           (await txn.query(
             'sale_invoices',
@@ -3648,8 +3660,11 @@ class AppDatabase {
           whereArgs: [recoveryKey],
         );
       }
+      await LiveSaleSync.record(txn, origin: liveSaleOrigin, draftId: draftId);
       return draftId;
     });
+    LiveSaleSync.wake();
+    return result;
   }
 
   Future<void> _createSaleRecovery(Database db) async {
@@ -4450,6 +4465,7 @@ class AppDatabase {
   }
 
   Future<void> _voidSaleInvoice(Transaction txn, int id, String clean) async {
+    final liveSaleOrigin = LiveSaleSync.origin;
     final rows = await txn.query(
       'sale_invoices',
       where: "id = ? AND status = 'posted'",
@@ -4532,6 +4548,12 @@ class AppDatabase {
       whereArgs: [id],
     );
     if (updated != 1) throw StateError('Sale changed. Reload');
+    await LiveSaleSync.record(
+      txn,
+      origin: liveSaleOrigin,
+      draftId: rows.single['draft_id'] as int,
+      saleId: id,
+    );
   }
 
   Future<int> createSaleCorrectionDraft({
@@ -5126,7 +5148,8 @@ class AppDatabase {
         pending.single['correction_source_sale_id'] != null) {
       await VoucherPermissions.requireEditable();
     }
-    return db.transaction((txn) async {
+    final liveSaleOrigin = LiveSaleSync.origin;
+    final result = await db.transaction((txn) async {
       // The draft is the idempotency key: a retry never posts stock or money twice.
       final posted = await txn.query(
         'sale_invoices',
@@ -5549,8 +5572,16 @@ class AppDatabase {
         where: 'recovery_key = ?',
         whereArgs: ['draft:$draftId'],
       );
+      await LiveSaleSync.record(
+        txn,
+        origin: liveSaleOrigin,
+        draftId: source?['draft_id'] as int? ?? draftId,
+        saleId: saleId,
+      );
       return saleId;
     });
+    LiveSaleSync.wake();
+    return result;
   }
 
   Future<void> _createCustomerReceipts(Database db) async {

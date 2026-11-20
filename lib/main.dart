@@ -1,3 +1,5 @@
+import 'live_sale_sync.dart';
+
 import 'batch_barcode_labels_page.dart';
 import 'sale_invoice_history_page.dart';
 import 'desktop_ui.dart';
@@ -80,6 +82,7 @@ Future<void> main() async {
   await AppLanguage.load();
   runApp(const _CurrencyBootstrap());
   unawaited(AutoBackupScheduler.start());
+  LiveSaleSync.start(() => AppDatabase.instance.database);
 }
 
 class _CurrencyBootstrap extends StatefulWidget {
