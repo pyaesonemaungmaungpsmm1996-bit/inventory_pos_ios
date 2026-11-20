@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'desktop_ui.dart';
@@ -46,6 +48,21 @@ class _AccountSales extends StatefulWidget {
 class _AccountSalesState extends State<_AccountSales> {
   late Stream<List<Map<String, dynamic>>> _sales = _watch();
   String? _selected;
+  Timer? _poller;
+
+  @override
+  void initState() {
+    super.initState();
+    _poller = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (mounted) setState(() => _sales = _watch());
+    });
+  }
+
+  @override
+  void dispose() {
+    _poller?.cancel();
+    super.dispose();
+  }
 
   Stream<List<Map<String, dynamic>>> _watch() => OnlineAccounts.client
       .from(LiveSaleSync.table)
