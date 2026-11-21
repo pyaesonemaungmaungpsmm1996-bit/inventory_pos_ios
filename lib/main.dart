@@ -1,3 +1,4 @@
+import 'branch_activity.dart';
 import 'live_sale_sync.dart';
 import 'live_purchase_sync.dart';
 import 'sync_dev_profile.dart';
@@ -90,6 +91,7 @@ Future<void> main() async {
     LiveSaleSync.start(() => AppDatabase.instance.database);
     LivePurchaseSync.start(() => AppDatabase.instance.database);
   }
+  BranchActivity.start();
 }
 
 class _CurrencyBootstrap extends StatefulWidget {

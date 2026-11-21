@@ -1,3 +1,4 @@
+import 'branch_activity.dart';
 import 'desktop_ui.dart';
 import 'simple_setup_page.dart';
 import 'billing_forms.dart';
@@ -666,6 +667,26 @@ class _OnlineAccountsPageState extends State<OnlineAccountsPage> {
               ),
             ),
           ),
+          if (b['active'] == true)
+            ListTile(
+              leading: const Icon(Icons.publish),
+              title: const Text('Enable branch activity sharing'),
+              onTap: () => BranchActivity.configure(context, b['id'] as String),
+            ),
+          if (owner && b['active'] == true)
+            ListTile(
+              leading: const Icon(Icons.analytics_outlined),
+              title: const Text('Branch activity'),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => BranchActivityPage(
+                    business: b['id'] as String,
+                    branches: rows(b, 'branches'),
+                  ),
+                ),
+              ),
+            ),
           if (owner) ...[
             const Text('Pending invitations'),
             if (rows(b, 'invitations').isEmpty)
