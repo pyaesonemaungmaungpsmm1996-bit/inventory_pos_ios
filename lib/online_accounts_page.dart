@@ -11,6 +11,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'online_account_service.dart';
 import 'online_permissions_page.dart';
+import 'shared_inventory_page.dart';
+import 'sync_dev_profile.dart';
 
 /// Online account-management pilot. Deliberately separate from legacy POS data.
 class OnlineAccountsPage extends StatefulWidget {
@@ -732,6 +734,31 @@ class _OnlineAccountsPageState extends State<OnlineAccountsPage> {
                           if (owner)
                             Text(
                               '${rows(b, 'devices').where((d) => d['branch_id'] == br['id'] && d['status'] == 'approved').length} approved devices / 3',
+                            ),
+                          if (SyncDevProfile.enabled && br['active'] != false)
+                            TextButton(
+                              onPressed: busy
+                                  ? null
+                                  : () {
+                                      final account = OnlineAccounts
+                                          .client
+                                          .auth
+                                          .currentUser
+                                          ?.id;
+                                      if (account == null) return;
+                                      Navigator.of(context).push(
+                                        MaterialPageRoute<void>(
+                                          builder: (_) => SharedInventoryPage(
+                                            business: b['id'] as String,
+                                            branch: br['id'] as String,
+                                            branchName: br['name'] as String,
+                                            account: account,
+                                            canEdit: owner,
+                                          ),
+                                        ),
+                                      );
+                                    },
+                              child: const Text('Shared products'),
                             ),
                           if (owner)
                             Wrap(

@@ -61,8 +61,9 @@ extension LivePurchaseImport on AppDatabase {
         where: 'request_key = ?',
         whereArgs: [key],
       );
-      if (existing.isNotEmpty)
+      if (existing.isNotEmpty) {
         return (id: existing.single['id'] as int, applied: false);
+      }
 
       final branchCode = payload['branch_code']?.toString().trim();
       if (branchCode == null || branchCode.isEmpty) {
@@ -115,8 +116,9 @@ extension LivePurchaseImport on AppDatabase {
       final items = <Map<String, Object?>>[];
       var itemTotal = 0;
       for (final raw in rawItems) {
-        if (raw is! Map)
+        if (raw is! Map) {
           throw StateError('The purchase contains an invalid item.');
+        }
         final sku = raw['item_code']?.toString().trim();
         final qty = raw['qty'];
         final price = raw['purchase_price'];
@@ -147,8 +149,9 @@ extension LivePurchaseImport on AppDatabase {
           );
         }
         itemTotal += qty * price;
-        if (itemTotal > 9000000000000)
+        if (itemTotal > 9000000000000) {
           throw StateError('Purchase total exceeds the limit.');
+        }
         items.add({
           'product_id': product['id'],
           'category_id': product['category_id'],
@@ -159,14 +162,16 @@ extension LivePurchaseImport on AppDatabase {
           'lots': lots,
         });
       }
-      if (itemTotal != total)
+      if (itemTotal != total) {
         throw StateError('Item totals do not match the purchase.');
+      }
 
       final payments = <Map<String, int>>[];
       var paidTotal = 0;
       for (final raw in rawPayments) {
-        if (raw is! Map)
+        if (raw is! Map) {
           throw StateError('The purchase contains an invalid payment.');
+        }
         final name = raw['account_name']?.toString().trim();
         final type = raw['type'];
         final amount = raw['amount'];
@@ -188,8 +193,9 @@ extension LivePurchaseImport on AppDatabase {
           'payment account $name',
         );
         paidTotal += amount;
-        if (paidTotal > 9000000000000)
+        if (paidTotal > 9000000000000) {
           throw StateError('Payment total exceeds the limit.');
+        }
         payments.add({'account_id': target['id'] as int, 'amount': amount});
       }
       if (paidTotal != paid) {

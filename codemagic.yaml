@@ -21,3 +21,43 @@ workflows:
     artifacts:
       - build/ios/ToePwarPOS.ipa
       - /tmp/xcodebuild_logs/*.log
+
+  toe-pwar-ios-sync-dev:
+    name: Toe Pwar POS iPhone - Sync Dev unsigned preview
+    instance_type: mac_mini_m2
+    max_build_duration: 30
+    environment:
+      flutter: 3.47.8
+      xcode: latest
+      cocoapods: default
+      groups:
+        - sync_dev
+    scripts:
+      - name: Configure the isolated iPhone app
+        script: |
+          set -eu
+          case "${TP_SYNC_DEV_PUBLISHABLE_KEY:-}" in
+            sb_publishable_?*) ;;
+            *) echo "Set TP_SYNC_DEV_PUBLISHABLE_KEY in the sync_dev variable group." >&2; exit 1 ;;
+          esac
+          project=ios/Runner.xcodeproj/project.pbxproj
+          perl -pi -e 's/PRODUCT_BUNDLE_IDENTIFIER = com\.example\.inventoryPos;/PRODUCT_BUNDLE_IDENTIFIER = com.example.inventoryPos.syncdev;/g' "$project"
+          test "$(grep -c 'PRODUCT_BUNDLE_IDENTIFIER = com.example.inventoryPos.syncdev;' "$project")" -eq 3
+          /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName Toe Pwar POS Sync Dev' ios/Runner/Info.plist
+      - name: Fetch dependencies
+        script: flutter pub get --enforce-lockfile
+      - name: Build Sync Dev for iPhone without signing
+        script: |
+          set -eu
+          flutter build ios --release --no-codesign --no-pub \
+            --build-name=1.0.3 --build-number="${BUILD_NUMBER:-1}" \
+            --dart-define=TP_SYNC_DEV=true \
+            --dart-define="TP_SYNC_DEV_PUBLISHABLE_KEY=$TP_SYNC_DEV_PUBLISHABLE_KEY"
+          app=build/ios/iphoneos/Runner.app
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")" = com.example.inventoryPos.syncdev
+          mkdir -p build/ios/sync-dev-package/Payload
+          ditto "$app" build/ios/sync-dev-package/Payload/Runner.app
+          ditto -c -k --keepParent build/ios/sync-dev-package/Payload build/ios/ToePwarPOS-Sync-Dev-Unsigned.ipa
+    artifacts:
+      - build/ios/ToePwarPOS-Sync-Dev-Unsigned.ipa
+      - /tmp/xcodebuild_logs/*.log

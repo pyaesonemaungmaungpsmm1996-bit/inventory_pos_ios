@@ -64,7 +64,7 @@ class _LiveVoucherPageState extends State<LiveVoucherPage> {
       );
       Navigator.pop(context);
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
@@ -72,6 +72,7 @@ class _LiveVoucherPageState extends State<LiveVoucherPage> {
             ),
           ),
         );
+      }
     } finally {
       if (mounted) setState(() => _applying = false);
     }
