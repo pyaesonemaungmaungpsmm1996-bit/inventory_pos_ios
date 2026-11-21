@@ -276,7 +276,7 @@ class _SaleInvoiceHistoryPageState extends State<SaleInvoiceHistoryPage> {
             a['updated_at']?.toString() ?? '',
           ),
         );
-    final visible = allRows
+    final visible = VoucherCode.markReferenceCollisions(allRows, number)
         .where(
           (r) =>
               (branch == null || r['branch_id'] == branch) &&
@@ -411,7 +411,9 @@ class _SaleInvoiceHistoryPageState extends State<SaleInvoiceHistoryPage> {
                     desktopCells: (context, i) {
                       final r = visible[i];
                       return [
-                        desktopCellText(number(r)),
+                        desktopCellText(
+                          VoucherCode.displayReference(r, number(r)),
+                        ),
                         desktopCellText(r['invoice_date']),
                         desktopCellText(r['branch_name']),
                         desktopCellText(r['customer_name']),
@@ -434,7 +436,7 @@ class _SaleInvoiceHistoryPageState extends State<SaleInvoiceHistoryPage> {
                       return DesktopListTile(
                         title: Text(
                           [
-                            number(r),
+                            VoucherCode.displayReference(r, number(r)),
                             if (r['customer_name']?.toString().isNotEmpty ??
                                 false)
                               r['customer_name'].toString(),

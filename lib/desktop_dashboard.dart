@@ -243,12 +243,10 @@ extension _DesktopDashboard on DashboardPageState {
                 for (final row in recent)
                   [
                     Text(
-                      row['live_number'] as String? ??
-                          '${row['kind'] == 'sale'
-                              ? 'INV'
-                              : row['kind'] == 'purchase'
-                              ? 'PUR'
-                              : 'RCPT'}-${(row['id'] as int).toString().padLeft(6, '0')}',
+                      VoucherCode.displayReference(
+                        row,
+                        dashboardReference(row),
+                      ),
                     ),
                     Text('${row['kind']}'),
                     Text(AppDateTime.format(row['recorded_at'])),

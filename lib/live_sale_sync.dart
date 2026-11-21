@@ -45,9 +45,10 @@ class LiveSaleSync {
   static Stream<List<Map<String, dynamic>>> watch(
     String account, {
     String? voucher,
+    bool purchase = false,
   }) {
     final query = OnlineAccounts.client
-        .from(table)
+        .from(purchase ? 'tp_live_purchases' : table)
         .stream(primaryKey: ['account_id', 'voucher_id'])
         .eq('account_id', account);
     return voucher == null

@@ -1,4 +1,5 @@
 import 'live_sale_sync.dart';
+import 'live_purchase_sync.dart';
 import 'sync_dev_profile.dart';
 import 'live_sales_page.dart';
 
@@ -87,6 +88,7 @@ Future<void> main() async {
   if (!SyncDevProfile.enabled) {
     unawaited(AutoBackupScheduler.start());
     LiveSaleSync.start(() => AppDatabase.instance.database);
+    LivePurchaseSync.start(() => AppDatabase.instance.database);
   }
 }
 
@@ -425,7 +427,11 @@ class _HomePageState extends State<HomePage> {
     if (voucher is String && account is String) {
       await Navigator.of(context).push<void>(
         MaterialPageRoute(
-          builder: (_) => LiveVoucherPage(account: account, voucher: voucher),
+          builder: (_) => LiveVoucherPage(
+            account: account,
+            voucher: voucher,
+            purchase: row['kind'] == 'purchase',
+          ),
         ),
       );
     } else if (row['kind'] == 'sale') {

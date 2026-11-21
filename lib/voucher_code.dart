@@ -29,6 +29,33 @@ class VoucherCode {
     return '$prefix-${suffix.padLeft(6, '0')}';
   }
 
+  static List<Map<String, Object?>> markReferenceCollisions(
+    List<Map<String, Object?>> rows,
+    String Function(Map<String, Object?>) number,
+  ) {
+    final counts = <String, int>{};
+    for (final row in rows) {
+      final key = '${row['branch_id'] ?? ''}:${number(row)}';
+      counts.update(key, (value) => value + 1, ifAbsent: () => 1);
+    }
+    return [
+      for (final row in rows)
+        if ((counts['${row['branch_id'] ?? ''}:${number(row)}'] ?? 0) > 1 &&
+            row['live_voucher'] is String)
+          {...row, 'reference_collision': true}
+        else
+          row,
+    ];
+  }
+
+  static String displayReference(Map<String, Object?> row, String number) {
+    final id = row['live_voucher'];
+    if (row['reference_collision'] != true || id is! String || id.length < 8) {
+      return number;
+    }
+    return '$number · Sync ${id.substring(0, 8).toUpperCase()}';
+  }
+
   static String digest(Map<String, Object?> snapshot) {
     final stable = {
       'kind': kindOf(snapshot),

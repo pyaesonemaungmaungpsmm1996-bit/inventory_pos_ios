@@ -9,7 +9,7 @@ void main(){
   db=await databaseFactoryFfi.openDatabase(inMemoryDatabasePath,options:OpenDatabaseOptions(singleInstance:false));
   for(final ddl in [
    'CREATE TABLE branches(id INTEGER PRIMARY KEY)',
-   'CREATE TABLE sale_invoices(id INTEGER PRIMARY KEY,branch_id INTEGER,total INTEGER,status TEXT,confirmed_at TEXT)',
+   'CREATE TABLE sale_invoices(id INTEGER PRIMARY KEY,branch_id INTEGER,total INTEGER,status TEXT,confirmed_at TEXT,branch_code_snapshot TEXT)',
    'CREATE TABLE expenses(id INTEGER PRIMARY KEY,branch_id INTEGER,amount INTEGER,status TEXT,posted_at TEXT)',
    'CREATE TABLE purchase_invoices(id INTEGER PRIMARY KEY,branch_id INTEGER,total INTEGER,status TEXT,confirmed_at TEXT)',
    'CREATE TABLE customer_receipts(id INTEGER PRIMARY KEY,branch_id INTEGER,total INTEGER,status TEXT,created_at TEXT)',

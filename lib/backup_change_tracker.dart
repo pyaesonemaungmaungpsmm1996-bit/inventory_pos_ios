@@ -38,7 +38,7 @@ class BackupChangeTracker {
         final name = 'tp_backup_dirty_${table}_$event';
         final alias = event == 'DELETE' ? 'OLD' : 'NEW';
         final when = table == 'app_settings'
-            ? " WHEN $alias.key<>'$key' AND $alias.key NOT LIKE 'backup_schema_%' AND $alias.key NOT GLOB 'live_sale_pending:*'"
+            ? " WHEN $alias.key<>'$key' AND $alias.key NOT LIKE 'backup_schema_%' AND $alias.key NOT GLOB 'live_sale_pending:*' AND $alias.key NOT GLOB 'live_purchase_pending:*'"
             : '';
         await db.execute('DROP TRIGGER IF EXISTS temp."$name"');
         await db.execute(

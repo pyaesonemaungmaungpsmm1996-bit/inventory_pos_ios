@@ -3,6 +3,7 @@ import 'package:sqflite/sqflite.dart';
 import 'app_database.dart';
 import 'app_datetime.dart';
 import 'live_sale_sync.dart';
+import 'live_purchase_sync.dart';
 
 /// Read-only branch snapshots. Does not change the sale/default branch or license.
 class DashboardRepository {
@@ -63,6 +64,10 @@ class DashboardRepository {
       'balance': balance.single['amount'],
       'recent': latest,
       'sale_identities': saleIdentities,
+      'purchase_identities': await LivePurchaseSync.localIdentities(
+        txn,
+        branch,
+      ),
       'loaded_at': DateTime.now().toUtc().toIso8601String(),
     };
   });
@@ -79,9 +84,9 @@ class DashboardRepository {
     }
     return db.rawQuery(
       '''SELECT * FROM (
-      SELECT 'sale' kind,id,total amount,confirmed_at recorded_at,status FROM sale_invoices WHERE branch_id=?
-      UNION ALL SELECT 'purchase',id,total,confirmed_at,status FROM purchase_invoices WHERE branch_id=?
-      UNION ALL SELECT 'receipt',id,total,created_at,status FROM customer_receipts WHERE branch_id=?
+      SELECT 'sale' kind,id,total amount,confirmed_at recorded_at,status,branch_id,branch_code_snapshot FROM sale_invoices WHERE branch_id=?
+      UNION ALL SELECT 'purchase',id,total,confirmed_at,status,branch_id,NULL FROM purchase_invoices WHERE branch_id=?
+      UNION ALL SELECT 'receipt',id,total,created_at,status,branch_id,NULL FROM customer_receipts WHERE branch_id=?
     ) ORDER BY recorded_at DESC,kind,id DESC LIMIT ? OFFSET ?''',
       [branch, branch, branch, limit, offset],
     );

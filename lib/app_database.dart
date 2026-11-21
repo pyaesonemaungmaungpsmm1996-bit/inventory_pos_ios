@@ -1,4 +1,5 @@
 import 'live_sale_sync.dart';
+import 'live_purchase_sync.dart';
 
 import 'purchase_zero_cost.dart';
 import 'backup_change_tracker.dart';
@@ -1356,6 +1357,7 @@ class AppDatabase {
     int id,
     String table,
   ) async {
+    final purchaseOrigin = LiveSaleSync.origin;
     final rows = await txn.query(
       table,
       where: 'id = ? AND status = ?',
@@ -1654,6 +1656,14 @@ class AppDatabase {
         origin: LiveSaleSync.origin,
         draftId: rows.single['draft_id'] as int,
         saleId: id,
+        removed: true,
+      );
+    }
+    if (kind == 'purchase') {
+      await LivePurchaseSync.record(
+        txn,
+        id,
+        origin: purchaseOrigin,
         removed: true,
       );
     }
@@ -6409,8 +6419,9 @@ class AppDatabase {
     if (requestKey.startsWith('purchase-correction-')) {
       await VoucherPermissions.requireEditable();
     }
+    final purchaseOrigin = LiveSaleSync.origin;
     final db = await database;
-    return db.transaction((txn) async {
+    final result = await db.transaction((txn) async {
       final previous = await txn.query(
         'purchase_invoices',
         columns: ['id'],
@@ -6686,8 +6697,23 @@ class AppDatabase {
         where: 'key = ? AND value LIKE ?',
         whereArgs: ['purchase_recovery', '%"request_key":"$requestKey"%'],
       );
+      await LivePurchaseSync.record(txn, purchaseId, origin: purchaseOrigin);
       return purchaseId;
     });
+    LivePurchaseSync.wake();
+    return result;
+  }
+
+  Future<void> queuePurchaseSync(int id) async {
+    final purchaseOrigin = LiveSaleSync.origin;
+    final db = await database;
+    final queued = await db.transaction(
+      (txn) => LivePurchaseSync.record(txn, id, origin: purchaseOrigin),
+    );
+    if (!queued) {
+      throw StateError('Sign in to the account that owns this purchase.');
+    }
+    LivePurchaseSync.wake();
   }
 
   Future<List<Map<String, Object?>>> getPurchases({
@@ -6789,6 +6815,7 @@ class AppDatabase {
     }
     final db = await database;
     await db.transaction((txn) => _voidPurchaseInvoice(txn, id, clean));
+    LivePurchaseSync.wake();
   }
 
   Future<void> _voidPurchaseInvoice(
@@ -6796,6 +6823,7 @@ class AppDatabase {
     int id,
     String clean,
   ) async {
+    final purchaseOrigin = LiveSaleSync.origin;
     final rows = await txn.query(
       'purchase_invoices',
       where: "id = ? AND status = 'posted'",
@@ -6874,6 +6902,7 @@ class AppDatabase {
       whereArgs: [id],
     );
     if (updated != 1) throw StateError('Purchase changed. Reload');
+    await LivePurchaseSync.record(txn, id, origin: purchaseOrigin);
   }
 
   Future<void> createPurchaseCorrectionWork({

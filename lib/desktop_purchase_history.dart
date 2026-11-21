@@ -2,7 +2,7 @@ part of 'purchase_page.dart';
 
 extension _DesktopPurchaseHistory on _PurchaseHistoryPageState {
   Widget desktopHistory() {
-    final visible = purchases.where((p) {
+    final visible = allPurchases.where((p) {
       final q = historySearch.toLowerCase().trim();
       final date = p['invoice_date'].toString();
       final due = p['balance_due'] as int;
@@ -14,7 +14,7 @@ extension _DesktopPurchaseHistory on _PurchaseHistoryPageState {
               (historyStatus == 'partial' && due > 0 && due < total) ||
               (historyStatus == 'unpaid' && due == total)) &&
           (q.isEmpty ||
-              '${_no(p['id'] as int)} ${p['supplier_name']}'
+              '${VoucherCode.displayReference(p, purchaseNumber(p))} ${p['supplier_name']}'
                   .toLowerCase()
                   .contains(q));
     }).toList();
@@ -153,7 +153,7 @@ extension _DesktopPurchaseHistory on _PurchaseHistoryPageState {
               rows: [
                 for (final p in visible)
                   [
-                    Text(_no(p['id'] as int)),
+                    Text(VoucherCode.displayReference(p, purchaseNumber(p))),
                     Text(p['invoice_date'].toString()),
                     Text(
                       (branches
@@ -179,12 +179,12 @@ extension _DesktopPurchaseHistory on _PurchaseHistoryPageState {
                     ),
                     IconButton(
                       tooltip: 'Open voucher',
-                      onPressed: () => detail(p['id'] as int),
+                      onPressed: () => openPurchase(p),
                       icon: const Icon(Icons.open_in_new, size: 17),
                     ),
                   ],
               ],
-              onRowTap: (i) => detail(visible[i]['id'] as int),
+              onRowTap: (i) => openPurchase(visible[i]),
             ),
           ),
         ],

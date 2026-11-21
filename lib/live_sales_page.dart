@@ -9,10 +9,12 @@ class LiveVoucherPage extends StatefulWidget {
     super.key,
     required this.account,
     required this.voucher,
+    this.purchase = false,
   });
 
   final String account;
   final String voucher;
+  final bool purchase;
 
   @override
   State<LiveVoucherPage> createState() => _LiveVoucherPageState();
@@ -22,13 +24,16 @@ class _LiveVoucherPageState extends State<LiveVoucherPage> {
   late final _auth = OnlineAccounts.client.auth.onAuthStateChange;
   late var _updates = _watch();
 
-  Stream<List<Map<String, dynamic>>> _watch() =>
-      LiveSaleSync.watch(widget.account, voucher: widget.voucher);
+  Stream<List<Map<String, dynamic>>> _watch() => LiveSaleSync.watch(
+    widget.account,
+    voucher: widget.voucher,
+    purchase: widget.purchase,
+  );
 
   @override
   Widget build(BuildContext context) => DesktopScaffold(
     appBar: AppBar(
-      title: const Text('Sale Invoice'),
+      title: Text(widget.purchase ? 'Purchase Invoice' : 'Sale Invoice'),
       actions: [
         IconButton(
           tooltip: 'Reconnect',
@@ -76,6 +81,8 @@ class _LiveVoucherPageState extends State<LiveVoucherPage> {
                   title: Text('${sale['number']} · ${sale['status']}'),
                   subtitle: Text('${sale['branch']} · ${sale['date']}'),
                 ),
+                if (widget.purchase && sale['supplier_name'] != null)
+                  ListTile(title: Text(sale['supplier_name'].toString())),
                 if (items is List)
                   for (final item in items.whereType<Map>())
                     ListTile(

@@ -1,3 +1,6 @@
+import 'voucher_code.dart';
+import 'live_purchase_sync.dart';
+import 'live_sales_page.dart';
 import 'history_date_filter.dart';
 import 'split_payment_dialog.dart';
 import 'desktop_ui.dart';
@@ -1798,11 +1801,58 @@ class _PurchaseHistoryPageState extends State<PurchaseHistoryPage> {
       purchases = [],
       supplierBalances = [];
   int? branchId;
+  List<Map<String, Object?>> purchaseIdentities = [];
+
+  List<Map<String, Object?>> get allPurchases {
+    final selected = branches.where((b) => b['id'] == branchId).firstOrNull;
+    final remote = selected == null
+        ? <Map<String, Object?>>[]
+        : LivePurchaseSync.forBranch(purchaseIdentities, selected);
+    final combined = [...purchases, ...remote]
+      ..sort(
+        (a, b) => (b['confirmed_at']?.toString() ?? '').compareTo(
+          a['confirmed_at']?.toString() ?? '',
+        ),
+      );
+    return VoucherCode.markReferenceCollisions(combined, purchaseNumber);
+  }
+
+  String purchaseNumber(Map<String, Object?> row) =>
+      row['live_number'] as String? ?? _no(row['id'] as int);
+
+  Future<void> openPurchase(Map<String, Object?> row) async {
+    final remote = row['live_voucher'];
+    final owner = row['live_account'];
+    if (remote is String && owner is String) {
+      await Navigator.push<void>(
+        context,
+        MaterialPageRoute(
+          builder: (_) =>
+              LiveVoucherPage(account: owner, voucher: remote, purchase: true),
+        ),
+      );
+      return;
+    }
+    await detail(row['id'] as int);
+  }
+
+  void _purchaseFeedChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    LivePurchaseSync.rows.removeListener(_purchaseFeedChanged);
+    super.dispose();
+  }
+
   bool loading = true;
   String? error;
   @override
   void initState() {
     super.initState();
+    LivePurchaseSync.rows.addListener(_purchaseFeedChanged);
+    LivePurchaseSync.wake();
     branchId = widget.initialBranchId;
     start();
   }
@@ -1831,6 +1881,9 @@ class _PurchaseHistoryPageState extends State<PurchaseHistoryPage> {
       final history = id == null
           ? <Map<String, Object?>>[]
           : await db.getPurchases(branchId: id);
+      final identities = id == null
+          ? <Map<String, Object?>>[]
+          : await LivePurchaseSync.localIdentities(await db.database, id);
       final balances = id == null
           ? <Map<String, Object?>>[]
           : await db.getSupplierBalances(branchId: id);
@@ -1839,6 +1892,7 @@ class _PurchaseHistoryPageState extends State<PurchaseHistoryPage> {
           branches = rows;
           branchId = id;
           purchases = history;
+          purchaseIdentities = identities;
           supplierBalances = balances;
           loading = false;
         });
@@ -2086,6 +2140,33 @@ class _PurchaseHistoryPageState extends State<PurchaseHistoryPage> {
                     ),
                   ),
                 ),
+                if (purchase['status'] == 'posted')
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.sync),
+                    label: Text(
+                      _t('Sync purchase', 'အဝယ်ဘောင်ချာ Sync လုပ်ရန်'),
+                    ),
+                    onPressed: () async {
+                      try {
+                        await AppDatabase.instance.queuePurchaseSync(id);
+                        if (!mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              _t(
+                                'Purchase queued for sync.',
+                                'အဝယ်ဘောင်ချာကို Sync လုပ်ရန် စာရင်းသွင်းပြီးပါပြီ။',
+                              ),
+                            ),
+                          ),
+                        );
+                      } catch (e) {
+                        if (!mounted) return;
+                        ScaffoldMessenger.of(context)
+                            .showSnackBar(SnackBar(content: Text('$e')));
+                      }
+                    },
+                  ),
                 if (purchase['status'] == 'void')
                   Text(
                     'VOID · ${purchase['void_reason']}',
@@ -2359,7 +2440,7 @@ class _PurchaseHistoryPageState extends State<PurchaseHistoryPage> {
 
   @override
   Widget build(BuildContext context) {
-    final visible = purchases
+    final visible = allPurchases
         .where(
           (p) =>
               HistoryDates.includes(p['invoice_date'], historyFrom, historyTo),
@@ -2446,7 +2527,12 @@ class _PurchaseHistoryPageState extends State<PurchaseHistoryPage> {
                               desktopCells: (context, index) {
                                 final r = visible[index];
                                 return [
-                                  desktopCellText('PUR-${r['id']}'),
+                                  desktopCellText(
+                                    VoucherCode.displayReference(
+                                      r,
+                                      purchaseNumber(r),
+                                    ),
+                                  ),
                                   desktopCellText(r['invoice_date']),
                                   desktopCellText(r['supplier_name']),
                                   desktopMoney(r['total']),
@@ -2461,7 +2547,7 @@ class _PurchaseHistoryPageState extends State<PurchaseHistoryPage> {
                                 final p = visible[index];
                                 return DesktopListTile(
                                   title: Text(
-                                    '${_no(p['id'] as int)} · ${p['supplier_name']}',
+                                    '${VoucherCode.displayReference(p, purchaseNumber(p))} · ${p['supplier_name']}',
                                   ),
                                   subtitle: Text(
                                     '${p['status'] == 'void' ? 'VOID · ' : ''}${p['invoice_date']} · ${AppDateTime.format(p['confirmed_at'])}',
@@ -2477,7 +2563,7 @@ class _PurchaseHistoryPageState extends State<PurchaseHistoryPage> {
                                         ),
                                     ],
                                   ),
-                                  onTap: () => detail(p['id'] as int),
+                                  onTap: () => openPurchase(p),
                                 );
                               },
                             ),

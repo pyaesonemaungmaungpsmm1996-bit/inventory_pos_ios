@@ -11,6 +11,8 @@ import 'app_datetime.dart';
 import 'app_language.dart';
 import 'dashboard_repository.dart';
 import 'live_sale_sync.dart';
+import 'live_purchase_sync.dart';
+import 'voucher_code.dart';
 import 'sale_invoice_history_page.dart';
 import 'online_account_service.dart';
 import 'pos_ui.dart';
@@ -87,6 +89,7 @@ class DashboardPageState extends State<DashboardPage> {
     super.initState();
     SubscriptionRuntime.changed.addListener(licenseChanged);
     LiveSaleSync.feed.addListener(_liveSalesChanged);
+    LivePurchaseSync.rows.addListener(_liveSalesChanged);
     reload();
   }
 
@@ -94,6 +97,7 @@ class DashboardPageState extends State<DashboardPage> {
   void dispose() {
     SubscriptionRuntime.changed.removeListener(licenseChanged);
     LiveSaleSync.feed.removeListener(_liveSalesChanged);
+    LivePurchaseSync.rows.removeListener(_liveSalesChanged);
     super.dispose();
   }
 
@@ -121,6 +125,7 @@ class DashboardPageState extends State<DashboardPage> {
         .map(
           (sale) => <String, Object?>{
             'kind': 'sale',
+            'branch_id': branch,
             'live_voucher': sale['live_voucher'],
             'live_number': sale['live_number'],
             'live_account': updates.account,
@@ -129,13 +134,24 @@ class DashboardPageState extends State<DashboardPage> {
             'recorded_at': sale['updated_at'],
           },
         );
-    final combined = [...local, ...remote]
+    final selected = branches.where((b) => b['id'] == branch).firstOrNull;
+    final purchaseIdentities =
+        (overview['purchase_identities'] as List?)
+            ?.cast<Map<String, Object?>>() ??
+        [];
+    final syncedPurchases = selected == null
+        ? <Map<String, Object?>>[]
+        : LivePurchaseSync.forBranch(purchaseIdentities, selected);
+    final combined = [...local, ...remote, ...syncedPurchases]
       ..sort((a, b) {
         final first = b['recorded_at']?.toString() ?? '';
         final second = a['recorded_at']?.toString() ?? '';
         return first.compareTo(second);
       });
-    return combined.take(5).toList();
+    return VoucherCode.markReferenceCollisions(
+      combined,
+      dashboardReference,
+    ).take(5).toList();
   }
 
   void licenseChanged() {
@@ -662,6 +678,14 @@ class DashboardPageState extends State<DashboardPage> {
   void changeDesktopPeriod(bool value) => setState(() => today = value);
 }
 
+String dashboardReference(Map<String, Object?> row) {
+  final reference = row['live_number'] as String?;
+  if (reference != null) return reference;
+  if (row['kind'] == 'sale') return VoucherCode.displayNumber(row);
+  final prefix = row['kind'] == 'purchase' ? 'PUR' : 'RCPT';
+  return '$prefix-${(row['id'] as int).toString().padLeft(6, '0')}';
+}
+
 class RecentTransactionTile extends StatelessWidget {
   const RecentTransactionTile({
     super.key,
@@ -673,11 +697,6 @@ class RecentTransactionTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final kind = row['kind'];
-    final prefix = kind == 'sale'
-        ? 'INV'
-        : kind == 'purchase'
-        ? 'PUR'
-        : 'RCPT';
     return Card(
       child: DesktopListTile(
         onTap: onTap,
@@ -689,10 +708,7 @@ class RecentTransactionTile extends StatelessWidget {
               : Icons.payments_outlined,
           size: 20,
         ),
-        title: Text(
-          row['live_number'] as String? ??
-              '$prefix-${(row['id'] as int).toString().padLeft(6, '0')}',
-        ),
+        title: Text(VoucherCode.displayReference(row, dashboardReference(row))),
         subtitle: Text(
           '${AppDateTime.format(row['recorded_at'])}${row['status'] == 'void' ? ' · VOID' : ''}',
         ),
