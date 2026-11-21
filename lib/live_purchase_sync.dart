@@ -9,6 +9,29 @@ import 'online_account_service.dart';
 
 class LivePurchaseSync {
   static const table = 'tp_live_purchases';
+  static const requestPrefix = 'tp-live-purchase:';
+  static final applied = ValueNotifier<int>(0);
+
+  static bool isAppliedRequest(Object? key) =>
+      key is String && key.startsWith(requestPrefix);
+
+  static Future<void> markApplied(
+    Transaction txn,
+    int localId,
+    ({String account, String installation, String voucher, int revision})
+    remote,
+  ) async {
+    await txn.insert('app_settings', {
+      'key': '$_identity${remote.installation}:$localId',
+      'value': jsonEncode({
+        'account': remote.account,
+        'voucher': remote.voucher,
+        'revision': remote.revision,
+        'received': true,
+      }),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
   static const _identity = 'live_purchase_identity:';
   static const _pending = 'live_purchase_pending:';
   static final rows = ValueNotifier<List<Map<String, dynamic>>>([]);
@@ -98,14 +121,42 @@ class LivePurchaseSync {
       where: 'id = ?',
       whereArgs: [row['branch_id']],
     )).single;
-    final items = removed
+    final items = <Map<String, Object?>>[];
+    if (!removed) {
+      final lines = await txn.rawQuery(
+        '''SELECT i.product_id,i.item_code,i.item_name,i.qty,i.amount,
+          i.purchase_price,p.tracking
+          FROM purchase_items i JOIN products p ON p.id=i.product_id
+          WHERE i.purchase_id = ? ORDER BY i.id''',
+        [id],
+      );
+      for (final item in lines) {
+        final lots = await txn.rawQuery(
+          '''SELECT serial,imei,expires_on,received_qty qty FROM stock_lots
+             WHERE purchase_id=? AND product_id=? ORDER BY id''',
+          [id, item['product_id']],
+        );
+        items.add({
+          for (final field in [
+            'item_code',
+            'item_name',
+            'qty',
+            'amount',
+            'purchase_price',
+            'tracking',
+          ])
+            field: item[field],
+          'lots': lots,
+        });
+      }
+    }
+    final payments = removed
         ? const []
-        : await txn.query(
-            'purchase_items',
-            where: 'purchase_id = ?',
-            whereArgs: [id],
-            columns: ['item_code', 'item_name', 'qty', 'amount'],
-            orderBy: 'id',
+        : await txn.rawQuery(
+            '''SELECT p.account_name,a.type,p.amount
+         FROM purchase_payments p JOIN money_accounts a ON a.id = p.account_id
+         WHERE p.purchase_id = ? ORDER BY p.account_id''',
+            [id],
           );
     final voucher =
         previous?['voucher'] as String? ??
@@ -141,6 +192,8 @@ class LivePurchaseSync {
           'paid': row['paid'],
           'balance_due': row['balance_due'],
           'items': items,
+          'posting_payload_version': 1,
+          'payments': payments,
         },
       }),
     }, conflictAlgorithm: ConflictAlgorithm.replace);

@@ -90,6 +90,7 @@ class DashboardPageState extends State<DashboardPage> {
     SubscriptionRuntime.changed.addListener(licenseChanged);
     LiveSaleSync.feed.addListener(_liveSalesChanged);
     LivePurchaseSync.rows.addListener(_liveSalesChanged);
+    LivePurchaseSync.applied.addListener(_receivedPurchase);
     reload();
   }
 
@@ -98,7 +99,12 @@ class DashboardPageState extends State<DashboardPage> {
     SubscriptionRuntime.changed.removeListener(licenseChanged);
     LiveSaleSync.feed.removeListener(_liveSalesChanged);
     LivePurchaseSync.rows.removeListener(_liveSalesChanged);
+    LivePurchaseSync.applied.removeListener(_receivedPurchase);
     super.dispose();
+  }
+
+  void _receivedPurchase() {
+    if (mounted) reload();
   }
 
   void _liveSalesChanged() {

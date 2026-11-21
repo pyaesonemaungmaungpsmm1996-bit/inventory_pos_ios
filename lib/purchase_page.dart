@@ -1831,6 +1831,7 @@ class _PurchaseHistoryPageState extends State<PurchaseHistoryPage> {
               LiveVoucherPage(account: owner, voucher: remote, purchase: true),
         ),
       );
+      if (mounted) await load();
       return;
     }
     await detail(row['id'] as int);

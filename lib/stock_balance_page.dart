@@ -5,6 +5,7 @@ import 'product_tracking.dart';
 import 'package:flutter/material.dart';
 
 import 'app_database.dart';
+import 'live_purchase_sync.dart';
 import 'app_language.dart';
 import 'app_capabilities.dart';
 part 'desktop_stock_balance.dart';
@@ -30,8 +31,19 @@ class _StockBalancePageState extends State<StockBalancePage> {
   @override
   void initState() {
     super.initState();
+    LivePurchaseSync.applied.addListener(_receivedPurchase);
     branch = widget.initialBranchId ?? 0;
     load();
+  }
+
+  void _receivedPurchase() {
+    if (mounted) load();
+  }
+
+  @override
+  void dispose() {
+    LivePurchaseSync.applied.removeListener(_receivedPurchase);
+    super.dispose();
   }
 
   Future<void> load() async {

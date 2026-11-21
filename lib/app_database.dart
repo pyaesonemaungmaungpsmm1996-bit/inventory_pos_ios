@@ -34,6 +34,8 @@ import 'barcode_rules.dart';
 import 'business_countries.dart';
 import 'business_timezones.dart';
 
+part 'live_purchase_import.dart';
+
 class AppDatabase {
   AppDatabase._();
   static final AppDatabase instance = AppDatabase._();
@@ -6421,292 +6423,321 @@ class AppDatabase {
     }
     final purchaseOrigin = LiveSaleSync.origin;
     final db = await database;
-    final result = await db.transaction((txn) async {
-      final previous = await txn.query(
-        'purchase_invoices',
-        columns: ['id'],
-        where: 'request_key = ?',
-        whereArgs: [requestKey],
-      );
-      if (previous.isNotEmpty) {
-        await txn.delete(
-          'app_settings',
-          where: 'key = ? AND value LIKE ?',
-          whereArgs: ['purchase_recovery', '%"request_key":"$requestKey"%'],
-        );
-        return previous.single['id'] as int;
-      }
-      final editMatch = RegExp(r'^purchase-correction-([0-9]+)-[0-9]+$')
-          .firstMatch(requestKey);
-      if (editMatch != null) {
-        await _voidPurchaseInvoice(
-          txn,
-          int.parse(editMatch[1]!),
-          'Edited using voucher unlock',
-        );
-      }
-      if ((await txn.query(
-        'branches',
-        where: 'id = ?',
-        whereArgs: [branchId],
-      )).isEmpty) {
-        throw StateError('Branch not found');
-      }
-      final supplier = await txn.query(
-        'contacts',
-        where: 'id = ? AND kind = ? AND active = 1',
-        whereArgs: [supplierId, 'supplier'],
-      );
-      if (supplier.isEmpty) throw StateError('Choose an active supplier');
-      final profile = (await txn.query(
-        'business_profile',
-        where: 'id = 1',
-      )).single;
-      var total = 0;
-      final seenProducts = <int>{};
-      for (final item in items) {
-        final productId = item['product_id'] as int?;
-        final name = (item['name'] as String? ?? '').trim();
-        final categoryId = item['category_id'] as int?;
-        final qty = item['qty'] as int?;
-        final purchasePrice = item['purchase_price'] as int?;
-        final salePrice = item['sale_price'] as int?;
-        if ((productId == null && (name.isEmpty || name.length > 150)) ||
-            categoryId == null ||
-            qty == null ||
-            qty <= 0 ||
-            qty > 2147483647 ||
-            purchasePrice == null ||
-            purchasePrice < 0 ||
-            purchasePrice > 2147483647 ||
-            salePrice == null ||
-            salePrice < 0 ||
-            salePrice > 2147483647) {
-          throw ArgumentError('Invalid purchase item');
-        }
-        if (productId != null && !seenProducts.add(productId)) {
-          throw ArgumentError('Duplicate product');
-        }
-        if ((await txn.query(
-          'product_categories',
-          where: 'id = ? AND active = 1',
-          whereArgs: [categoryId],
-        )).isEmpty) {
-          throw StateError('Category not found');
-        }
-        final amount = qty * purchasePrice;
-        total += amount;
-        if (total > 9000000000000) {
-          throw ArgumentError('Purchase total exceeds limit');
-        }
-      }
+    final result = await db.transaction(
+      (txn) => _postPurchaseTx(
+        txn,
+        requestKey: requestKey,
+        branchId: branchId,
+        supplierId: supplierId,
+        invoiceDate: invoiceDate,
+        items: items,
+        payments: payments,
+        purchaseOrigin: purchaseOrigin,
+      ),
+    );
+    LivePurchaseSync.wake();
+    return result;
+  }
 
-      var paid = 0;
-      final seenAccounts = <int>{};
-      for (final payment in payments) {
-        final accountId = payment['account_id'];
-        final amount = payment['amount'];
-        if (accountId == null ||
-            amount == null ||
-            amount <= 0 ||
-            amount > 9000000000000 ||
-            !seenAccounts.add(accountId)) {
-          throw ArgumentError('Invalid split payment');
-        }
-        final account = await txn.rawQuery(
-          '''SELECT a.id, COALESCE(SUM(e.amount), 0) AS balance
-          FROM money_accounts a LEFT JOIN money_entries e ON e.account_id = a.id
-          WHERE a.id = ? AND a.branch_id = ? GROUP BY a.id''',
-          [accountId, branchId],
-        );
-        if (account.isEmpty || (account.single['balance'] as int) < amount) {
-          throw StateError('Insufficient balance in a selected account');
-        }
-        paid += amount;
-      }
-      if (paid > total) throw ArgumentError('Payments exceed purchase total');
-      final now = DateTime.now().toUtc().toIso8601String();
-      final supplierRow = supplier.single;
-      final purchaseId = await txn.insert('purchase_invoices', {
-        'request_key': requestKey,
-        'branch_id': branchId,
-        'supplier_id': supplierId,
-        'supplier_name': supplierRow['name'],
-        'supplier_phone': supplierRow['phone'],
-        'supplier_address': supplierRow['address'],
-        'invoice_date': invoiceDate,
-        'confirmed_at': now,
-        'total': total,
-        'paid': paid,
-        'balance_due': total - paid,
-        'currency_code': profile['currency_code'],
-        'currency_digits': profile['currency_digits'],
-      });
-      for (final item in items) {
-        final categoryId = item['category_id'] as int;
-        final category = (await txn.query(
-          'product_categories',
-          where: 'id = ?',
-          whereArgs: [categoryId],
-        )).single;
-        var productId = item['product_id'] as int?;
-        if (productId == null) {
-          productId = await txn.insert('products', {
-            'name': (item['name'] as String).trim(),
-            'price': item['sale_price'],
-            'stock': 0,
-            'category_id': categoryId,
-            'brand_id': item['brand_id'],
-            'color': item['color'] ?? '',
-            'size': item['size'] ?? '',
-            'tracking': item['tracking'] ?? 'none',
-            'warranty_days': item['warranty_days'] ?? 0,
-          });
-          final code = BarcodeRules.forItemCode(
-            item['item_code'] as String?,
-            productId,
-          );
-          await txn.update(
-            'products',
-            {
-              'item_code': code,
-              'barcode': BarcodeRules.forProduct(
-                item['barcode'] as String?,
-                productId,
-                itemCodeValue: code,
-              ),
-            },
-            where: 'id = ?',
-            whereArgs: [productId],
-          );
-        } else {
-          await ProductTracking.validatePurchasePolicy(txn, productId, item);
-          final count = await txn.update(
-            'products',
-            {
-              'price': item['sale_price'],
-              'category_id': categoryId,
-              if (item['warranty_days'] != null)
-                'warranty_days': item['warranty_days'],
-              if (item.containsKey('brand_id')) 'brand_id': item['brand_id'],
-            },
-            where: 'id = ?',
-            whereArgs: [productId],
-          );
-          if (count != 1) throw StateError('Product not found');
-        }
-        final product = (await txn.query(
-          'products',
-          where: 'id = ?',
-          whereArgs: [productId],
-        )).single;
-        if (item['photo_base64'] is String) {
-          final bytes = base64Decode(item['photo_base64'] as String);
-          _validateProductImage(bytes);
-          await txn.insert('product_images', {
-            'product_id': productId,
-            'image': bytes,
-          }, conflictAlgorithm: ConflictAlgorithm.replace);
-        }
-        await ProductTracking.brand(
-          txn,
-          product['brand_id'] as int?,
-          categoryId,
-        );
-        await ProductTracking.receive(
-          txn,
-          productId,
-          branchId,
-          purchaseId,
-          item,
-          replacingPurchaseId: editMatch == null
-              ? null
-              : int.parse(editMatch[1]!),
-        );
-        final qty = item['qty'] as int;
-        await txn.rawInsert(
-          'INSERT OR IGNORE INTO branch_stocks(branch_id, product_id, stock) VALUES (?, ?, 0)',
-          [branchId, productId],
-        );
-        final stock = await txn.rawUpdate(
-          '''UPDATE branch_stocks SET stock = stock + ?
-          WHERE branch_id = ? AND product_id = ? AND stock <= ?''',
-          [qty, branchId, productId, 2147483647 - qty],
-        );
-        if (stock != 1) throw StateError('Stock limit exceeded');
-        await txn.insert('purchase_items', {
-          'purchase_id': purchaseId,
-          'product_id': productId,
-          'item_code': product['item_code'],
-          'item_name': product['name'],
-          'category_name': category['name'],
-          'tracking_json': jsonEncode(item['lots'] ?? []),
-          'purchase_price': item['purchase_price'],
-          'sale_price': item['sale_price'],
-          'qty': qty,
-          'amount': qty * (item['purchase_price'] as int),
-        });
-        await txn.insert('stock_movements', {
-          'branch_id': branchId,
-          'product_id': productId,
-          'quantity': qty,
-          'kind': 'purchase',
-          'note': 'Purchase PUR-${purchaseId.toString().padLeft(6, '0')}',
-          'created_at': now,
-          'purchase_id': purchaseId,
-        });
-      }
-      for (final payment in payments) {
-        final accountId = payment['account_id']!;
-        final amount = payment['amount']!;
-        final account = (await txn.query(
-          'money_accounts',
-          where: 'id = ?',
-          whereArgs: [accountId],
-        )).single;
-        await txn.insert('purchase_payments', {
-          'purchase_id': purchaseId,
-          'account_id': accountId,
-          'account_name': account['name'],
-          'amount': amount,
-          'payment_date': invoiceDate,
-          'created_at': now,
-        });
-        await txn.insert('money_entries', {
-          'account_id': accountId,
-          'kind': 'payment',
-          'amount': -amount,
-          'entry_date': invoiceDate,
-          'note': 'Purchase PUR-${purchaseId.toString().padLeft(6, '0')}',
-          'created_at': now,
-          'purchase_id': purchaseId,
-        });
-      }
-      final correction = RegExp(r'^purchase-correction-([0-9]+)-[0-9]+$')
-          .firstMatch(requestKey);
-      if (correction != null) {
-        await txn.update(
-          'purchase_invoices',
-          {'replacement_id': purchaseId},
-          where: "id = ? AND status = 'void' AND replacement_id IS NULL",
-          whereArgs: [int.parse(correction[1]!)],
-        );
-      }
+  Future<int> _postPurchaseTx(
+    Transaction txn, {
+    required String requestKey,
+    required int branchId,
+    required int supplierId,
+    required String invoiceDate,
+    required List<Map<String, Object?>> items,
+    required List<Map<String, int>> payments,
+    ({String account, String installation})? purchaseOrigin,
+    ({String account, String installation, String voucher, int revision})?
+    replica,
+    DateTime? recordedAt,
+  }) async {
+    final previous = await txn.query(
+      'purchase_invoices',
+      columns: ['id'],
+      where: 'request_key = ?',
+      whereArgs: [requestKey],
+    );
+    if (previous.isNotEmpty) {
       await txn.delete(
         'app_settings',
         where: 'key = ? AND value LIKE ?',
         whereArgs: ['purchase_recovery', '%"request_key":"$requestKey"%'],
       );
-      await LivePurchaseSync.record(txn, purchaseId, origin: purchaseOrigin);
-      return purchaseId;
+      return previous.single['id'] as int;
+    }
+    final editMatch = RegExp(r'^purchase-correction-([0-9]+)-[0-9]+$')
+        .firstMatch(requestKey);
+    if (editMatch != null) {
+      await _voidPurchaseInvoice(
+        txn,
+        int.parse(editMatch[1]!),
+        'Edited using voucher unlock',
+      );
+    }
+    if ((await txn.query(
+      'branches',
+      where: 'id = ?',
+      whereArgs: [branchId],
+    )).isEmpty) {
+      throw StateError('Branch not found');
+    }
+    final supplier = await txn.query(
+      'contacts',
+      where: 'id = ? AND kind = ? AND active = 1',
+      whereArgs: [supplierId, 'supplier'],
+    );
+    if (supplier.isEmpty) throw StateError('Choose an active supplier');
+    final profile = (await txn.query(
+      'business_profile',
+      where: 'id = 1',
+    )).single;
+    var total = 0;
+    final seenProducts = <int>{};
+    for (final item in items) {
+      final productId = item['product_id'] as int?;
+      final name = (item['name'] as String? ?? '').trim();
+      final categoryId = item['category_id'] as int?;
+      final qty = item['qty'] as int?;
+      final purchasePrice = item['purchase_price'] as int?;
+      final salePrice = item['sale_price'] as int?;
+      if ((productId == null && (name.isEmpty || name.length > 150)) ||
+          categoryId == null ||
+          qty == null ||
+          qty <= 0 ||
+          qty > 2147483647 ||
+          purchasePrice == null ||
+          purchasePrice < 0 ||
+          purchasePrice > 2147483647 ||
+          salePrice == null ||
+          salePrice < 0 ||
+          salePrice > 2147483647) {
+        throw ArgumentError('Invalid purchase item');
+      }
+      if (productId != null && !seenProducts.add(productId)) {
+        throw ArgumentError('Duplicate product');
+      }
+      if ((await txn.query(
+        'product_categories',
+        where: 'id = ? AND active = 1',
+        whereArgs: [categoryId],
+      )).isEmpty) {
+        throw StateError('Category not found');
+      }
+      final amount = qty * purchasePrice;
+      total += amount;
+      if (total > 9000000000000) {
+        throw ArgumentError('Purchase total exceeds limit');
+      }
+    }
+
+    var paid = 0;
+    final seenAccounts = <int>{};
+    for (final payment in payments) {
+      final accountId = payment['account_id'];
+      final amount = payment['amount'];
+      if (accountId == null ||
+          amount == null ||
+          amount <= 0 ||
+          amount > 9000000000000 ||
+          !seenAccounts.add(accountId)) {
+        throw ArgumentError('Invalid split payment');
+      }
+      final account = await txn.rawQuery(
+        '''SELECT a.id, COALESCE(SUM(e.amount), 0) AS balance
+          FROM money_accounts a LEFT JOIN money_entries e ON e.account_id = a.id
+          WHERE a.id = ? AND a.branch_id = ? GROUP BY a.id''',
+        [accountId, branchId],
+      );
+      if (account.isEmpty || (account.single['balance'] as int) < amount) {
+        throw StateError('Insufficient balance in a selected account');
+      }
+      paid += amount;
+    }
+    if (paid > total) throw ArgumentError('Payments exceed purchase total');
+    final now = (recordedAt ?? DateTime.now()).toUtc().toIso8601String();
+    final supplierRow = supplier.single;
+    final purchaseId = await txn.insert('purchase_invoices', {
+      'request_key': requestKey,
+      'branch_id': branchId,
+      'supplier_id': supplierId,
+      'supplier_name': supplierRow['name'],
+      'supplier_phone': supplierRow['phone'],
+      'supplier_address': supplierRow['address'],
+      'invoice_date': invoiceDate,
+      'confirmed_at': now,
+      'total': total,
+      'paid': paid,
+      'balance_due': total - paid,
+      'currency_code': profile['currency_code'],
+      'currency_digits': profile['currency_digits'],
     });
-    LivePurchaseSync.wake();
-    return result;
+    for (final item in items) {
+      final categoryId = item['category_id'] as int;
+      final category = (await txn.query(
+        'product_categories',
+        where: 'id = ?',
+        whereArgs: [categoryId],
+      )).single;
+      var productId = item['product_id'] as int?;
+      if (productId == null) {
+        productId = await txn.insert('products', {
+          'name': (item['name'] as String).trim(),
+          'price': item['sale_price'],
+          'stock': 0,
+          'category_id': categoryId,
+          'brand_id': item['brand_id'],
+          'color': item['color'] ?? '',
+          'size': item['size'] ?? '',
+          'tracking': item['tracking'] ?? 'none',
+          'warranty_days': item['warranty_days'] ?? 0,
+        });
+        final code = BarcodeRules.forItemCode(
+          item['item_code'] as String?,
+          productId,
+        );
+        await txn.update(
+          'products',
+          {
+            'item_code': code,
+            'barcode': BarcodeRules.forProduct(
+              item['barcode'] as String?,
+              productId,
+              itemCodeValue: code,
+            ),
+          },
+          where: 'id = ?',
+          whereArgs: [productId],
+        );
+      } else {
+        await ProductTracking.validatePurchasePolicy(txn, productId, item);
+        final count = await txn.update(
+          'products',
+          {
+            'price': item['sale_price'],
+            'category_id': categoryId,
+            if (item['warranty_days'] != null)
+              'warranty_days': item['warranty_days'],
+            if (item.containsKey('brand_id')) 'brand_id': item['brand_id'],
+          },
+          where: 'id = ?',
+          whereArgs: [productId],
+        );
+        if (count != 1) throw StateError('Product not found');
+      }
+      final product = (await txn.query(
+        'products',
+        where: 'id = ?',
+        whereArgs: [productId],
+      )).single;
+      if (item['photo_base64'] is String) {
+        final bytes = base64Decode(item['photo_base64'] as String);
+        _validateProductImage(bytes);
+        await txn.insert('product_images', {
+          'product_id': productId,
+          'image': bytes,
+        }, conflictAlgorithm: ConflictAlgorithm.replace);
+      }
+      await ProductTracking.brand(txn, product['brand_id'] as int?, categoryId);
+      await ProductTracking.receive(
+        txn,
+        productId,
+        branchId,
+        purchaseId,
+        item,
+        replacingPurchaseId: editMatch == null
+            ? null
+            : int.parse(editMatch[1]!),
+      );
+      final qty = item['qty'] as int;
+      await txn.rawInsert(
+        'INSERT OR IGNORE INTO branch_stocks(branch_id, product_id, stock) VALUES (?, ?, 0)',
+        [branchId, productId],
+      );
+      final stock = await txn.rawUpdate(
+        '''UPDATE branch_stocks SET stock = stock + ?
+          WHERE branch_id = ? AND product_id = ? AND stock <= ?''',
+        [qty, branchId, productId, 2147483647 - qty],
+      );
+      if (stock != 1) throw StateError('Stock limit exceeded');
+      await txn.insert('purchase_items', {
+        'purchase_id': purchaseId,
+        'product_id': productId,
+        'item_code': product['item_code'],
+        'item_name': product['name'],
+        'category_name': category['name'],
+        'tracking_json': jsonEncode(item['lots'] ?? []),
+        'purchase_price': item['purchase_price'],
+        'sale_price': item['sale_price'],
+        'qty': qty,
+        'amount': qty * (item['purchase_price'] as int),
+      });
+      await txn.insert('stock_movements', {
+        'branch_id': branchId,
+        'product_id': productId,
+        'quantity': qty,
+        'kind': 'purchase',
+        'note': 'Purchase PUR-${purchaseId.toString().padLeft(6, '0')}',
+        'created_at': now,
+        'purchase_id': purchaseId,
+      });
+    }
+    for (final payment in payments) {
+      final accountId = payment['account_id']!;
+      final amount = payment['amount']!;
+      final account = (await txn.query(
+        'money_accounts',
+        where: 'id = ?',
+        whereArgs: [accountId],
+      )).single;
+      await txn.insert('purchase_payments', {
+        'purchase_id': purchaseId,
+        'account_id': accountId,
+        'account_name': account['name'],
+        'amount': amount,
+        'payment_date': invoiceDate,
+        'created_at': now,
+      });
+      await txn.insert('money_entries', {
+        'account_id': accountId,
+        'kind': 'payment',
+        'amount': -amount,
+        'entry_date': invoiceDate,
+        'note': 'Purchase PUR-${purchaseId.toString().padLeft(6, '0')}',
+        'created_at': now,
+        'purchase_id': purchaseId,
+      });
+    }
+    final correction = RegExp(r'^purchase-correction-([0-9]+)-[0-9]+$')
+        .firstMatch(requestKey);
+    if (correction != null) {
+      await txn.update(
+        'purchase_invoices',
+        {'replacement_id': purchaseId},
+        where: "id = ? AND status = 'void' AND replacement_id IS NULL",
+        whereArgs: [int.parse(correction[1]!)],
+      );
+    }
+    await txn.delete(
+      'app_settings',
+      where: 'key = ? AND value LIKE ?',
+      whereArgs: ['purchase_recovery', '%"request_key":"$requestKey"%'],
+    );
+    if (replica == null) {
+      await LivePurchaseSync.record(txn, purchaseId, origin: purchaseOrigin);
+    } else {
+      await LivePurchaseSync.markApplied(txn, purchaseId, replica);
+    }
+    return purchaseId;
   }
 
   Future<void> queuePurchaseSync(int id) async {
     final purchaseOrigin = LiveSaleSync.origin;
     final db = await database;
+    final local = await getPurchase(id);
+    if (LivePurchaseSync.isAppliedRequest(local['request_key'])) {
+      throw StateError('This purchase was received from another device.');
+    }
     final queued = await db.transaction(
       (txn) => LivePurchaseSync.record(txn, id, origin: purchaseOrigin),
     );
@@ -6831,6 +6862,11 @@ class AppDatabase {
     );
     if (rows.isEmpty) throw StateError('Purchase already void or missing');
     final purchase = rows.single;
+    if (LivePurchaseSync.isAppliedRequest(purchase['request_key'])) {
+      throw StateError(
+        'Correct or void this purchase on the device that created it.',
+      );
+    }
     final settlements = await txn.query(
       'supplier_settlements',
       columns: ['id'],
@@ -6933,6 +6969,9 @@ class AppDatabase {
       );
       if (rows.isEmpty) throw StateError('Purchase already void or missing');
       final p = rows.single;
+      if (LivePurchaseSync.isAppliedRequest(p['request_key'])) {
+        throw StateError('Correct this purchase on its original device.');
+      }
       final lines = await txn.rawQuery(
         '''SELECT i.*, p.category_id,p.brand_id,p.color,p.size,p.tracking,p.warranty_days
         FROM purchase_items i JOIN products p ON p.id = i.product_id
@@ -7113,6 +7152,9 @@ class AppDatabase {
       );
       if (rows.isEmpty) throw StateError('Purchase not found');
       final purchase = rows.single;
+      if (LivePurchaseSync.isAppliedRequest(purchase['request_key'])) {
+        throw StateError('Record payments on the original device.');
+      }
       if (purchase['status'] != 'posted') {
         throw StateError('Purchase invoice is void');
       }
