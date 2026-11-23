@@ -154,11 +154,21 @@ declare
 begin
   select i.history into history from tp_inventory_sync.opening_imports i
     where i.shop_id = shop and i.branch_id = (result->>'branch_id')::uuid;
-  if history is null then return result; end if;
   return jsonb_set(result, '{vouchers}', (
     select coalesce(jsonb_agg(voucher order by voucher->>'occurred_at' desc, voucher->>'number'), '[]'::jsonb)
     from (
-      select value as voucher from jsonb_array_elements(result->'vouchers')
+      select entry.value || jsonb_build_object('lines', (
+        select coalesce(jsonb_agg(jsonb_build_object(
+          'item_code', product.code, 'item_name', product.name, 'qty', line.quantity,
+          'unit_price', line.unit_minor, 'amount', coalesce(line.line_minor, line.quantity * line.unit_minor),
+          'serials', line.serials
+        ) order by line.product_id), '[]'::jsonb)
+        from jsonb_to_recordset(event.payload->'lines')
+          line(product_id uuid, quantity bigint, unit_minor bigint, line_minor bigint, serials jsonb)
+        join tp_inventory_sync.products product on product.shop_id = shop and product.id = line.product_id
+      )) as voucher
+      from jsonb_array_elements(result->'vouchers') entry
+      join tp_inventory_sync.events event on event.shop_id = shop and event.id = (entry.value->>'id')::uuid
       union all
       select value || jsonb_build_object('occurred_at',
         (value->>'invoice_date')::date::timestamp at time zone 'Asia/Yangon', 'archived', true)

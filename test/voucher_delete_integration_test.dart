@@ -96,6 +96,9 @@ void main(){
    expect(history.single['kind'], 'sale');
    expect(history.single['total'], 200);
    expect(history.single['paid'], 200);
+   final lines = (history.single['lines'] as List).cast<Map>();
+   expect(lines.single['item_name'], 'Shirt');
+   expect(lines.single['qty'], 2);
    await expectLater(SharedPosOpeningImport.prepare('WRONG'), throwsStateError);
   } finally {
    await app.deleteVoucher(kind:'sale',id:sale);

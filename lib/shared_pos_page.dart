@@ -402,12 +402,26 @@ class _SharedPosPageState extends State<SharedPosPage> {
         if (kind == SharedPosPageKind.sales ||
             kind == SharedPosPageKind.purchases)
           for (final row in visibleVouchers)
-            ListTile(
+            ExpansionTile(
               title: Text('${row['number'] ?? row['occurred_at']}'),
               subtitle: row['archived'] == true
                   ? Text('${row['invoice_date']} · ${row['status']}')
                   : null,
               trailing: Text(_money(row['total'])),
+              children: [
+                for (final line in (row['lines'] as List? ?? []).cast<Map>())
+                  ListTile(
+                    title: Text('${line['item_code']} · ${line['item_name']}'),
+                    subtitle: Text(
+                      '${line['qty']} × ${_money(line['unit_price'])}',
+                    ),
+                    trailing: Text(_money(line['amount'])),
+                  ),
+                ListTile(
+                  title: Text('Paid: ${_money(row['paid'])}'),
+                  subtitle: Text('Balance due: ${_money(row['due'])}'),
+                ),
+              ],
             ),
       ],
     );

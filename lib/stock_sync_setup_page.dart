@@ -14,6 +14,7 @@ import 'shared_pos_session.dart';
 import 'shared_pos_opening_import.dart';
 import 'stock_sync.dart';
 import 'stock_sync_checkout.dart';
+import 'stock_sync_login.dart';
 
 class StockSyncPreviewEntry extends StatefulWidget {
   const StockSyncPreviewEntry({super.key});
@@ -28,34 +29,90 @@ class _StockSyncPreviewEntryState extends State<StockSyncPreviewEntry> {
   final _email = TextEditingController();
   final _password = TextEditingController();
   final _code = TextEditingController();
-  SupabaseClient? _client;
+  StockSyncLogin? _login;
   bool _busy = false;
   bool _emailCode = true;
   String? _codeEmail;
   String? _status;
 
   String t(String en, String my) => AppLanguage.current.value == 'my' ? my : en;
+  User? get _user => _login?.client.auth.currentUser;
+
+  @override
+  void initState() {
+    super.initState();
+    final url = Uri.tryParse(_url);
+    if (url == null ||
+        url.scheme != 'https' ||
+        !_key.startsWith('sb_publishable_')) {
+      return;
+    }
+    _login = StockSyncLogin.connect(_url, _key);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_restoreLogin());
+    });
+  }
 
   @override
   void dispose() {
     _email.dispose();
     _password.dispose();
     _code.dispose();
-    final client = _client;
-    if (client != null &&
-        BranchRecordsSync.publisher?.client != client &&
-        BranchRecordsSync.reader?.client != client &&
-        SharedPosSession.current?.connection.client != client) {
-      unawaited(client.dispose());
-    }
     super.dispose();
   }
 
+  Future<void> _openSession(User user) async {
+    final client = _login!.client;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            StockSyncSetupPage(api: StockSyncApi(client), userId: user.id),
+      ),
+    );
+  }
+
+  Future<void> _restoreLogin() async {
+    if (_busy || _login == null) return;
+    setState(() {
+      _busy = true;
+      _status = null;
+    });
+    try {
+      final session = await _login!.restore();
+      if (mounted && session != null) await _openSession(session.user);
+    } catch (error) {
+      if (mounted) setState(() => _status = error.toString());
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _signOut() async {
+    if (_busy) return;
+    setState(() {
+      _busy = true;
+      _status = null;
+    });
+    try {
+      await BranchRecordsSync.publisher?.stop();
+      BranchRecordsSync.publisher = null;
+      BranchRecordsSync.reader = null;
+      SharedPosSession.current = null;
+      await _login!.signOut();
+      _email.clear();
+      _password.clear();
+      _code.clear();
+      _codeEmail = null;
+    } catch (error) {
+      if (mounted) setState(() => _status = error.toString());
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   Future<void> _signIn() async {
-    final url = Uri.tryParse(_url);
-    if (url == null ||
-        url.scheme != 'https' ||
-        !_key.startsWith('sb_publishable_')) {
+    final login = _login;
+    if (login == null) {
       setState(
         () => _status = t(
           'Configure the test project URL and publishable key at build time.',
@@ -69,7 +126,7 @@ class _StockSyncPreviewEntryState extends State<StockSyncPreviewEntry> {
       _status = null;
     });
     try {
-      final client = _client ??= StockSyncApi.connect(_url, _key);
+      final client = login.client;
       final email = _email.text.trim();
       if (_emailCode && _codeEmail != email) {
         await client.auth.signInWithOtp(email: email, shouldCreateUser: false);
@@ -94,22 +151,14 @@ class _StockSyncPreviewEntryState extends State<StockSyncPreviewEntry> {
               email: email,
               password: _password.text,
             );
-      final user = response.user;
-      if (!mounted || user == null) return;
+      final session = response.session;
+      if (session == null) return;
+      await login.remember(session);
+      if (!mounted) return;
       _password.clear();
       _code.clear();
       _codeEmail = null;
-      await Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (_) =>
-              StockSyncSetupPage(api: StockSyncApi(client), userId: user.id),
-        ),
-      );
-      if (BranchRecordsSync.publisher?.client != client &&
-          BranchRecordsSync.reader?.client != client &&
-          SharedPosSession.current?.connection.client != client) {
-        await client.auth.signOut(scope: SignOutScope.local);
-      }
+      await _openSession(session.user);
     } catch (error) {
       if (mounted) setState(() => _status = error.toString());
     } finally {
@@ -134,14 +183,8 @@ class _StockSyncPreviewEntryState extends State<StockSyncPreviewEntry> {
             trailing: TextButton(
               onPressed: _busy
                   ? null
-                  : () async {
+                  : () {
                       setState(() => SharedPosSession.current = null);
-                      await shared.connection.client.auth.signOut(
-                        scope: SignOutScope.local,
-                      );
-                      if (_client != shared.connection.client) {
-                        await shared.connection.client.dispose();
-                      }
                     },
               child: Text(t('Disconnect', 'ချိတ်ဆက်မှု ဖြုတ်ရန်')),
             ),
@@ -169,17 +212,8 @@ class _StockSyncPreviewEntryState extends State<StockSyncPreviewEntry> {
             trailing: TextButton(
               onPressed: _busy
                   ? null
-                  : () async {
+                  : () {
                       setState(() => BranchRecordsSync.reader = null);
-                      try {
-                        await reader.client.auth.signOut(
-                          scope: SignOutScope.local,
-                        );
-                      } finally {
-                        if (_client != reader.client) {
-                          await reader.client.dispose();
-                        }
-                      }
                     },
               child: Text(t('Disconnect', 'ချိတ်ဆက်မှု ဖြုတ်ရန်')),
             ),
@@ -197,87 +231,97 @@ class _StockSyncPreviewEntryState extends State<StockSyncPreviewEntry> {
                       setState(() => _busy = true);
                       await publisher.stop();
                       BranchRecordsSync.publisher = null;
-                      await publisher.client.auth.signOut(
-                        scope: SignOutScope.local,
-                      );
-                      if (_client != publisher.client) {
-                        await publisher.client.dispose();
-                      }
                       if (mounted) setState(() => _busy = false);
                     },
               child: Text(t('Stop sync', 'စာရင်းပို့ခြင်း ရပ်ရန်')),
             ),
           ),
-        TextField(
-          controller: _email,
-          enabled: !_busy,
-          keyboardType: TextInputType.emailAddress,
-          decoration: const InputDecoration(labelText: 'Email'),
-        ),
-        if (!_emailCode)
-          TextField(
-            controller: _password,
-            enabled: !_busy,
-            obscureText: true,
-            decoration: InputDecoration(labelText: t('Password', 'စကားဝှက်')),
+        if (_busy) const LinearProgressIndicator(),
+        if (_user case final user?) ...[
+          ListTile(
+            title: Text(t('Signed in', 'အကောင့် ဝင်ထားပါသည်')),
+            subtitle: Text(user.email ?? ''),
           ),
-        if (_emailCode && _codeEmail != null)
+          FilledButton(
+            onPressed: _busy ? null : _restoreLogin,
+            child: Text(t('Open stock sync', 'Stock sync ဖွင့်ရန်')),
+          ),
+          TextButton(
+            onPressed: _busy ? null : _signOut,
+            child: Text(t('Sign out', 'အကောင့်မှ ထွက်ရန်')),
+          ),
+        ] else ...[
           TextField(
-            controller: _code,
+            controller: _email,
             enabled: !_busy,
-            keyboardType: TextInputType.number,
-            autofillHints: const [AutofillHints.oneTimeCode],
-            decoration: InputDecoration(
-              labelText: t('Email code', 'Email မှ code'),
+            keyboardType: TextInputType.emailAddress,
+            decoration: const InputDecoration(labelText: 'Email'),
+          ),
+          if (!_emailCode)
+            TextField(
+              controller: _password,
+              enabled: !_busy,
+              obscureText: true,
+              decoration: InputDecoration(labelText: t('Password', 'စကားဝှက်')),
+            ),
+          if (_emailCode && _codeEmail != null)
+            TextField(
+              controller: _code,
+              enabled: !_busy,
+              keyboardType: TextInputType.number,
+              autofillHints: const [AutofillHints.oneTimeCode],
+              decoration: InputDecoration(
+                labelText: t('Email code', 'Email မှ code'),
+              ),
+            ),
+          if (_emailCode && _codeEmail != null)
+            TextButton(
+              onPressed: _busy
+                  ? null
+                  : () {
+                      setState(() => _codeEmail = null);
+                      unawaited(_signIn());
+                    },
+              child: Text(t('Send a new code', 'Code အသစ် ပို့ရန်')),
+            ),
+          FilledButton(
+            onPressed:
+                _busy ||
+                    BranchRecordsSync.publisher != null ||
+                    BranchRecordsSync.reader != null ||
+                    SharedPosSession.current != null
+                ? null
+                : _signIn,
+            child: Text(
+              _emailCode && _codeEmail == null
+                  ? t('Send email code', 'Email code ပို့ရန်')
+                  : t('Sign in to test project', 'စမ်းသပ် project သို့ ဝင်ရန်'),
             ),
           ),
-        if (_status != null) SelectableText(_status!),
-        if (_emailCode && _codeEmail != null)
           TextButton(
-            onPressed: _busy
+            onPressed:
+                _busy ||
+                    BranchRecordsSync.publisher != null ||
+                    BranchRecordsSync.reader != null ||
+                    SharedPosSession.current != null
                 ? null
                 : () {
-                    setState(() => _codeEmail = null);
-                    unawaited(_signIn());
+                    setState(() {
+                      _emailCode = !_emailCode;
+                      _codeEmail = null;
+                      _code.clear();
+                      _password.clear();
+                      _status = null;
+                    });
                   },
-            child: Text(t('Send a new code', 'Code အသစ် ပို့ရန်')),
+            child: Text(
+              _emailCode
+                  ? t('Use password', 'စကားဝှက်ဖြင့် ဝင်ရန်')
+                  : t('Use email code', 'Email code ဖြင့် ဝင်ရန်'),
+            ),
           ),
-        FilledButton(
-          onPressed:
-              _busy ||
-                  BranchRecordsSync.publisher != null ||
-                  BranchRecordsSync.reader != null ||
-                  SharedPosSession.current != null
-              ? null
-              : _signIn,
-          child: Text(
-            _emailCode && _codeEmail == null
-                ? t('Send email code', 'Email code ပို့ရန်')
-                : t('Sign in to test project', 'စမ်းသပ် project သို့ ဝင်ရန်'),
-          ),
-        ),
-        TextButton(
-          onPressed:
-              _busy ||
-                  BranchRecordsSync.publisher != null ||
-                  BranchRecordsSync.reader != null ||
-                  SharedPosSession.current != null
-              ? null
-              : () {
-                  setState(() {
-                    _emailCode = !_emailCode;
-                    _codeEmail = null;
-                    _code.clear();
-                    _password.clear();
-                    _status = null;
-                  });
-                },
-          child: Text(
-            _emailCode
-                ? t('Use password', 'စကားဝှက်ဖြင့် ဝင်ရန်')
-                : t('Use email code', 'Email code ဖြင့် ဝင်ရန်'),
-          ),
-        ),
+        ],
+        if (_status != null) SelectableText(_status!),
       ],
     ),
   );

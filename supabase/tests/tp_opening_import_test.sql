@@ -16,7 +16,8 @@ declare
     'products','[{"code":"DE0001","name":"Laptop","price":150,"quantity":2,"serial_tracking":true,"serials":["S1","S2"]}]'::jsonb,
     'accounts','[{"name":"Cash","kind":"cash","balance":500}]'::jsonb,
     'history',jsonb_build_array(jsonb_build_object('kind','purchase','number','PUR-000002',
-      'invoice_date',(now() at time zone 'Asia/Yangon')::date,'status','posted','total',300,'paid',300,'due',0))
+      'invoice_date',(now() at time zone 'Asia/Yangon')::date,'status','posted','total',300,'paid',300,'due',0,
+      'lines','[{"item_code":"DE0001","item_name":"Laptop","qty":2,"unit_price":150,"amount":300}]'::jsonb))
   );
   result jsonb;
   product uuid;
@@ -42,6 +43,7 @@ begin
   if result#>>'{stock,0,on_hand}' is distinct from '2'
     or result#>>'{accounts,0,balance}' is distinct from '500'
     or result#>>'{vouchers,0,number}' is distinct from 'PUR-000002'
+    or result#>>'{vouchers,0,lines,0,item_code}' is distinct from 'DE0001'
     or public.tp_stock_sync_branch_serials(shop,phone,secret)->product::text is distinct from '["S1","S2"]'::jsonb then
     raise exception 'Imported serials, balances or archived history differ from source';
   end if;
@@ -51,6 +53,7 @@ begin
   result := public.tp_stock_sync_branch_view(shop,desktop,secret,start_time,end_time);
   if result#>>'{stock,0,on_hand}' is distinct from '1'
     or result#>>'{accounts,0,balance}' is distinct from '650'
+    or result#>>'{vouchers,0,lines,0,serials,0}' is distinct from 'S1'
     or jsonb_array_length(result->'vouchers') <> 2 then
     raise exception 'Post-import sale was not reflected on Windows';
   end if;

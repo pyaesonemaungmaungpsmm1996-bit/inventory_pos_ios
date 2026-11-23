@@ -1,5 +1,6 @@
 import 'app_database.dart';
 import 'branch_records_sync.dart';
+import 'product_tracking.dart';
 import 'voucher_code.dart';
 
 class SharedPosOpeningImport {
@@ -92,6 +93,30 @@ class SharedPosOpeningImport {
         ('sale_invoices', 'sale', 'INV'),
         ('purchase_invoices', 'purchase', 'PUR'),
       ]) {
+        final documentId = kind == 'sale' ? 'sale_id' : 'purchase_id';
+        final lineTable = kind == 'sale' ? 'sale_items' : 'purchase_items';
+        final unitPrice = kind == 'sale' ? 'price' : 'purchase_price';
+        final voucherLines = await txn.rawQuery(
+          '''SELECT i.$documentId AS voucher, i.item_code, i.item_name,
+                    i.qty, i.$unitPrice AS unit_price, i.amount, i.tracking_json
+             FROM $lineTable i JOIN $table v ON v.id = i.$documentId
+             WHERE v.branch_id = ? ORDER BY i.id''',
+          [branchId],
+        );
+        final linesByVoucher = <int, List<Map<String, Object?>>>{};
+        for (final line in voucherLines) {
+          (linesByVoucher[line['voucher'] as int] ??= []).add({
+            for (final key in [
+              'item_code',
+              'item_name',
+              'qty',
+              'unit_price',
+              'amount',
+            ])
+              key: line[key],
+            'tracking': ProductTracking.decode(line['tracking_json']),
+          });
+        }
         final vouchers = await txn.query(
           table,
           columns: [
@@ -124,6 +149,7 @@ class SharedPosOpeningImport {
             'total': row['total'],
             'paid': row['paid'],
             'due': row['balance_due'],
+            'lines': linesByVoucher[row['id']] ?? const [],
           });
         }
       }
