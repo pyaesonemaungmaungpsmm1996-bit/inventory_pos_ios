@@ -314,7 +314,10 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
     };
   }
 
-  Future<void> _openOfflineDraft() async {
+  Future<void> _openSyncDraft({
+    required bool online,
+    bool cancel = false,
+  }) async {
     final shop = _shop;
     final branch = _branch;
     final snapshot = _snapshot;
@@ -362,6 +365,8 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
       final checkout = StockSyncCheckout(
         store: OfflineStockStore(shop: shop, device: device['id']!),
         localBranchId: localBranchId,
+        onlineApi: online ? widget.api : null,
+        onlineSecret: online ? device['secret'] : null,
         products: _mapCodes(
           products,
           rows(snapshot['products']),
@@ -400,6 +405,37 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
       if (!mounted || draft == null || shop != _shop || branch != _branch) {
         return;
       }
+      if (cancel) {
+        final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (dialog) => AlertDialog(
+            title: Text(
+              t(
+                'Cancel pending online checkout?',
+                'စောင့်နေတဲ့ online အရောင်း ပယ်ဖျက်မလား။',
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialog, false),
+                child: Text(t('Keep request', 'တောင်းဆိုမှု ဆက်ထားရန်')),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialog, true),
+                child: Text(t('Cancel request', 'တောင်းဆိုမှု ပယ်ဖျက်ရန်')),
+              ),
+            ],
+          ),
+        );
+        if (!mounted || confirmed != true) return;
+        final db = await app.database;
+        final cancelled = await checkout.cancelOnline(db, draft);
+        if (!cancelled) {
+          throw StateError('This draft has no pending online request.');
+        }
+        return;
+      }
+
       final id = await Navigator.of(context).push(
         MaterialPageRoute<int>(
           builder: (_) =>
@@ -907,11 +943,41 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
                 'cashier',
               ].contains(_selected?['role']))
             OutlinedButton(
-              onPressed: _busy ? null : _openOfflineDraft,
+              onPressed: _busy ? null : () => _openSyncDraft(online: false),
               child: Text(
                 t('Offline checkout test', 'Offline အရောင်း စမ်းသပ်ရန်'),
               ),
             ),
+          if (_snapshot != null &&
+              const [
+                'owner',
+                'manager',
+                'cashier',
+              ].contains(_selected?['role']))
+            OutlinedButton(
+              onPressed: _busy ? null : () => _openSyncDraft(online: true),
+              child: Text(
+                t('Online checkout test', 'Online အရောင်း စမ်းသပ်ရန်'),
+              ),
+            ),
+          if (_snapshot != null &&
+              const [
+                'owner',
+                'manager',
+                'cashier',
+              ].contains(_selected?['role']))
+            TextButton(
+              onPressed: _busy
+                  ? null
+                  : () => _openSyncDraft(online: true, cancel: true),
+              child: Text(
+                t(
+                  'Cancel pending online request',
+                  'စောင့်နေတဲ့ online request ပယ်ဖျက်ရန်',
+                ),
+              ),
+            ),
+
           if (_pendingSales > 0)
             Text(
               '${t('Sales waiting to sync', 'Sync ပို့ရန်ကျန်သော အရောင်း')}: $_pendingSales',
@@ -921,6 +987,10 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
             for (final stock in rows(_snapshot!['products']))
               ListTile(
                 title: Text('${stock['name']}'),
+                subtitle: Text(
+                  '${t('Shared on hand', 'ဆိုင်ခွဲ လက်ကျန်')}: ${stock['on_hand']} · '
+                  '${t('Available online', 'Online ရောင်းနိုင်')}: ${stock['available_online']}',
+                ),
                 trailing: Text(
                   '${t('This device', 'ဤစက်ရောင်းခွင့်')} '
                   '${stock['offline_remaining']}',

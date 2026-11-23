@@ -109,6 +109,31 @@ begin
     or (report#>>'{accounts,0,balance_minor}')::int is distinct from 4000
     or report#>>'{expenses,0,note}' is distinct from 'Packaging'
     or report#>>'{devices,0,last_sync_at}' is null then raise exception 'Owner rollup mismatch: %',report; end if;
+  key := gen_random_uuid();
+  command := jsonb_build_object('kind','sale','counterparty','Online Customer','lines',
+    jsonb_build_array(jsonb_build_object('product_id',product,'quantity',1,'unit_minor',2500)));
+  perform public.tp_stock_sync_cancel_sale(shop,device_a,secret_a,key);
+  perform public.tp_stock_sync_cancel_sale(shop,device_a,secret_a,key);
+  begin
+    perform public.tp_stock_sync_post(shop,device_a,secret_a,key,command);
+    raise exception 'A cancelled sale posted';
+  exception when raise_exception then
+    if sqlerrm <> 'This online request was cancelled.' then raise; end if;
+  end;
+  key := gen_random_uuid();
+  perform public.tp_stock_sync_post(shop,device_a,secret_a,key,command);
+  begin
+    perform public.tp_stock_sync_cancel_sale(shop,device_a,secret_a,key);
+    raise exception 'A posted sale was cancelled';
+  exception when raise_exception then
+    if sqlerrm <> 'This online sale is already posted. Retry the original checkout.' then raise; end if;
+  end;
+  inventory := public.tp_stock_sync_snapshot(shop,device_b,secret_b)->'products'->0;
+  if (inventory->>'on_hand')::int is distinct from 7
+    or (inventory->>'available_online')::int is distinct from 2 then
+    raise exception 'Cancellation changed stock';
+  end if;
+
 end
 $$;
 

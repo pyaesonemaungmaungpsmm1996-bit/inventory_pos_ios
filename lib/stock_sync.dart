@@ -116,6 +116,23 @@ class StockSyncApi {
     );
   }
 
+  Future<void> cancelSale({
+    required String shop,
+    required String device,
+    required String secret,
+    required String operation,
+  }) async {
+    await client.rpc(
+      'tp_stock_sync_cancel_sale',
+      params: {
+        'shop': shop,
+        'device': device,
+        'secret': secret,
+        'operation': operation,
+      },
+    );
+  }
+
   Future<Map<String, dynamic>> ownerReport({
     required String shop,
     required DateTime from,

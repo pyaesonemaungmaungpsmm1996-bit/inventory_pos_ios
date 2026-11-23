@@ -1,0 +1,77 @@
+name: Device stock sync native preview
+
+on:
+  push:
+    branches: [feature/device-stock-sync]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-preview:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: windows-portable
+            artifact: build/windows/x64/runner/Release/
+          - runner: ubuntu-latest
+            target: android-test
+            artifact: build/app/outputs/flutter-apk/app-release.apk
+          - runner: macos-latest
+            target: ios-unsigned
+            artifact: build/ios/iphoneos/Runner.app/
+    runs-on: ${{ matrix.runner }}
+    env:
+      TP_STOCK_SYNC_URL: ${{ vars.TP_STOCK_SYNC_URL }}
+      TP_STOCK_SYNC_PUBLISHABLE_KEY: ${{ vars.TP_STOCK_SYNC_PUBLISHABLE_KEY }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v5
+        if: matrix.target == 'android-test'
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.8'
+          cache: true
+
+      - name: Fetch locked dependencies
+        run: flutter pub get --enforce-lockfile
+
+      - name: Verify checkout tests
+        if: matrix.target == 'windows-portable'
+        run: flutter test --no-pub test/stock_sync_test.dart test/voucher_delete_integration_test.dart
+
+      - name: Build
+        shell: bash
+        env:
+          TP_BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          if [[ -z "$TP_STOCK_SYNC_URL" && -z "$TP_STOCK_SYNC_PUBLISHABLE_KEY" ]]; then
+            defines=(--dart-define=TP_STOCK_SYNC_PREVIEW=false)
+          else
+            [[ "$TP_STOCK_SYNC_URL" =~ ^https://[a-z0-9]+\.supabase\.co$ ]]
+            [[ "$TP_STOCK_SYNC_PUBLISHABLE_KEY" =~ ^sb_publishable_[A-Za-z0-9_-]+$ ]]
+            defines=(
+              --dart-define=TP_STOCK_SYNC_PREVIEW=true
+              "--dart-define=TP_STOCK_SYNC_URL=$TP_STOCK_SYNC_URL"
+              "--dart-define=TP_STOCK_SYNC_PUBLISHABLE_KEY=$TP_STOCK_SYNC_PUBLISHABLE_KEY"
+            )
+          fi
+          case "$TP_BUILD_TARGET" in
+            windows-portable) flutter build windows --release --no-pub "${defines[@]}" ;;
+            android-test) flutter build apk --release --no-pub "${defines[@]}" ;;
+            ios-unsigned) flutter build ios --release --no-pub --no-codesign "${defines[@]}" ;;
+          esac
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: toe-pwar-${{ matrix.target }}-${{ github.sha }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error

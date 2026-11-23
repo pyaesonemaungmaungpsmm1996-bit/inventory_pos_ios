@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:sqflite/sqflite.dart' as sq;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' as ffi;
 import 'package:inventory_pos/app_database.dart';
@@ -118,4 +120,58 @@ void main(){
   expect(await balance(cash),beforeCash+185);
  });
 
+ test('online checkout retries the same server operation after an accepted request loses its reply',()async{
+  final store=OfflineStockStore(shop:'online-shop',device:'online-device');
+  await OfflineStockStore.ensureTables(db);
+  const cloudProduct='00000000-0000-4000-8000-000000000011';
+  const cloudAccount='00000000-0000-4000-8000-000000000012';
+  await store.applySnapshot(db,[
+    {'id':cloudProduct,'device_granted':0,'device_consumed':0},
+  ],snapshot:{'currency':'MMK','accounts':[{'id':cloudAccount,'kind':'cash'}]});
+  final api=_OnlineSaleApi();
+  addTearDown(api.client.dispose);
+  final checkout=StockSyncCheckout(
+    store:store,localBranchId:branch,products:{product:cloudProduct},
+    cashAccounts:{cash:cloudAccount},onlineApi:api,onlineSecret:'test-secret',
+  );
+  final draft=await app.saveSaleDraft(branchId:branch,saveCustomer:false,customerName:'',customerPhone:'',customerCompany:'',customerAddress:'',employeeId:employee,invoiceDate:day,discountType:'amount',discountValue:15,items:[{'product_id':product,'qty':2,'price':100}]);
+  final revision=(await app.getSaleDraft(draft))['revision'] as int;
+  Future<int> confirm(StockSyncCheckout? mode)=>app.confirmSaleDraft(draftId:draft,revision:revision,paymentDate:day,payments:[{'account_id':cash,'amount':185}],offlineCheckout:mode);
+  final beforeStock=await stock(), beforeCash=await balance(cash);
+  await expectLater(confirm(checkout),throwsStateError);
+  expect(await stock(),beforeStock);
+  expect(await balance(cash),beforeCash);
+  expect(await db.query('sale_invoices',where:'draft_id=?',whereArgs:[draft]),isEmpty);
+  await expectLater(confirm(null),throwsStateError);
+  final sale=await confirm(checkout);
+  expect(await confirm(checkout),sale);
+  expect(api.operationIds,hasLength(2));
+  expect(api.operationIds.toSet(),hasLength(1));
+  expect(api.commands.first,api.commands.last);
+  expect(api.commands.first['offline'],isFalse);
+  expect(await stock(),beforeStock-2);
+  expect(await balance(cash),beforeCash+185);
+  expect(await store.pending(db),isEmpty);
+ });
+
+}
+
+class _OnlineSaleApi extends StockSyncApi {
+  _OnlineSaleApi() : super(SupabaseClient('https://example.invalid','test-publishable'));
+
+  final operationIds=<String>[];
+  final commands=<Map<String,Object?>>[];
+
+  @override
+  Future<void> post({
+    required String shop,
+    required String device,
+    required String secret,
+    required String operation,
+    required Map<String,Object?> command,
+  }) async {
+    operationIds.add(operation);
+    commands.add(command);
+    if(operationIds.length==1) throw TimeoutException('Response lost after posting');
+  }
 }

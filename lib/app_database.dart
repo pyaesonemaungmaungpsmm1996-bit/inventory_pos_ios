@@ -1677,6 +1677,7 @@ class AppDatabase {
         where: 'draft_id = ?',
         whereArgs: [draftId],
       );
+      await StockSyncCheckout.requireCheckoutMode(txn, draftId, null);
       await txn.delete('sale_drafts', where: 'id = ?', whereArgs: [draftId]);
     }
   }
@@ -5154,6 +5155,7 @@ class AppDatabase {
         pending.single['correction_source_sale_id'] != null) {
       await VoucherPermissions.requireEditable();
     }
+    await offlineCheckout?.prepareOnline(db, draftId: draftId, revision: revision, payments: payments);
     final liveSaleOrigin = LiveSaleSync.origin;
     final result = await db.transaction((txn) async {
       // The draft is the idempotency key: a retry never posts stock or money twice.
@@ -5163,6 +5165,7 @@ class AppDatabase {
         whereArgs: [draftId],
       );
       if (posted.isNotEmpty) return posted.single['id'] as int;
+      await StockSyncCheckout.requireCheckoutMode(txn, draftId, offlineCheckout);
       final completedEdit = await txn.query(
         'app_settings',
         columns: ['value'],
@@ -5248,6 +5251,7 @@ class AppDatabase {
         'sale_draft_items',
         where: 'draft_id = ?',
         whereArgs: [draftId],
+        orderBy: 'id',
       );
       if (items.isEmpty) throw StateError('Draft has no items.');
       final accounts = <int>{};
