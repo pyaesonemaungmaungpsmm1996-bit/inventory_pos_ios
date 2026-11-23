@@ -142,6 +142,28 @@ class SharedPosSession {
 
   Future<void> retry() => _exclusive(_sendPending);
 
+  Future<void> returnSale({
+    required String sale,
+    required String product,
+    required String account,
+    required int units,
+    required int refund,
+    required List<String> serials,
+  }) => _exclusive(() async {
+    if (await hasPending()) {
+      throw StateError('Retry the pending voucher first.');
+    }
+    await _stage({
+      'kind': 'return',
+      'sale': sale,
+      'product': product,
+      'account': account,
+      'units': units,
+      'refund': refund,
+      'serial_numbers': serials,
+    });
+  });
+
   Future<void> voidVoucher(String voucher, String reason) =>
       _exclusive(() async {
         if (await hasPending()) {
@@ -186,7 +208,26 @@ class SharedPosSession {
     final pending = jsonDecode(saved) as Map;
     final command = Map<String, Object?>.from(pending['command'] as Map);
     try {
-      if (command['kind'] == 'void') {
+      if (command['kind'] == 'return') {
+        await connection.client.rpc(
+          'tp_stock_sync_return_sale',
+          params: {
+            'shop': connection.shop,
+            'device': connection.device,
+            'secret': connection.secret,
+            'operation': pending['operation'],
+            for (final key in [
+              'sale',
+              'product',
+              'account',
+              'units',
+              'refund',
+              'serial_numbers',
+            ])
+              key: command[key],
+          },
+        );
+      } else if (command['kind'] == 'void') {
         await connection.client.rpc(
           'tp_stock_sync_void_voucher',
           params: {

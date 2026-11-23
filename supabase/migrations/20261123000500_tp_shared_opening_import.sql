@@ -159,7 +159,7 @@ begin
     from (
       select entry.value || jsonb_build_object('lines', (
         select coalesce(jsonb_agg(jsonb_build_object(
-          'item_code', product.code, 'item_name', product.name, 'qty', line.quantity,
+          'product_id', product.id, 'item_code', product.code, 'item_name', product.name, 'qty', line.quantity,
           'unit_price', line.unit_minor, 'amount', coalesce(line.line_minor, line.quantity * line.unit_minor),
           'serials', line.serials
         ) order by line.product_id), '[]'::jsonb)

@@ -467,6 +467,124 @@ class _SharedPosPageState extends State<SharedPosPage> {
     );
   }
 
+  int _remainingReturn(Map voucher, Map line) {
+    final returned = (voucher['returns'] as List? ?? []).cast<Map>();
+    return (line['qty'] as int) -
+        returned
+            .where((row) => row['product_id'] == line['product_id'])
+            .fold<int>(0, (total, row) => total + (row['quantity'] as int));
+  }
+
+  Future<void> _returnLine(Map voucher, Map line) async {
+    final maxUnits = _remainingReturn(voucher, line);
+    final returnedSerials = {
+      for (final row in (voucher['returns'] as List? ?? []).cast<Map>())
+        if (row['product_id'] == line['product_id'])
+          ...(row['serials'] as List).cast<String>(),
+    };
+    final sold = line['serials'] as List?;
+    final serialOptions = sold?.cast<String>().where(
+      (value) => !returnedSerials.contains(value.trim().toUpperCase()),
+    );
+    String? account, serial;
+    var units = 1;
+    int? amount;
+    final result =
+        await showDialog<
+          ({String account, int units, int amount, String? serial})
+        >(
+          context: context,
+          builder: (context) => StatefulBuilder(
+            builder: (context, update) => AlertDialog(
+              title: Text('Return ${line['item_code']}'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (serialOptions != null)
+                      DropdownButtonFormField<String>(
+                        decoration: const InputDecoration(
+                          labelText: 'Serial number',
+                        ),
+                        items: [
+                          for (final value in serialOptions)
+                            DropdownMenuItem(value: value, child: Text(value)),
+                        ],
+                        onChanged: (value) => update(() => serial = value),
+                      )
+                    else
+                      TextFormField(
+                        initialValue: '1',
+                        decoration: InputDecoration(
+                          labelText: 'Quantity (up to $maxUnits)',
+                        ),
+                        keyboardType: TextInputType.number,
+                        onChanged: (value) =>
+                            update(() => units = int.tryParse(value) ?? 0),
+                      ),
+                    DropdownButtonFormField<String>(
+                      decoration: const InputDecoration(
+                        labelText: 'Refund account',
+                      ),
+                      items: [
+                        for (final row in _rows('accounts'))
+                          DropdownMenuItem(
+                            value: row['id'] as String,
+                            child: Text('${row['name']}'),
+                          ),
+                      ],
+                      onChanged: (value) => update(() => account = value),
+                    ),
+                    TextField(
+                      decoration: const InputDecoration(
+                        labelText: 'Refund amount',
+                      ),
+                      keyboardType: TextInputType.number,
+                      onChanged: (value) =>
+                          update(() => amount = int.tryParse(value)),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed:
+                      units < 1 ||
+                          units > maxUnits ||
+                          account == null ||
+                          (serialOptions != null && serial == null) ||
+                          amount == null ||
+                          amount! < 0
+                      ? null
+                      : () => Navigator.pop(context, (
+                          account: account!,
+                          units: units,
+                          amount: amount!,
+                          serial: serial,
+                        )),
+                  child: const Text('Confirm return'),
+                ),
+              ],
+            ),
+          ),
+        );
+    if (!mounted || result == null) return;
+    await _run(
+      () => widget.session.returnSale(
+        sale: voucher['id'] as String,
+        product: line['product_id'] as String,
+        account: result.account,
+        units: result.units,
+        refund: result.amount,
+        serials: [?result.serial],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final kind = widget.kind;
@@ -537,12 +655,22 @@ class _SharedPosPageState extends State<SharedPosPage> {
                     subtitle: Text(
                       '${line['qty']} × ${_money(line['unit_price'])}',
                     ),
-                    trailing: Text(_money(line['amount'])),
+                    trailing: row['can_return'] == true &&
+                            _remainingReturn(row, line) > 0
+                        ? TextButton(
+                            onPressed: _busy || _pending
+                                ? null
+                                : () => _returnLine(row, line),
+                            child: const Text('Return'),
+                          )
+                        : Text(_money(line['amount'])),
                   ),
                 ListTile(
                   title: Text('Paid: ${_money(row['paid'])}'),
                   subtitle: Text('Balance due: ${_money(row['due'])}'),
                 ),
+                if ((row['returns'] as List?)?.isNotEmpty == true)
+                  ListTile(title: Text('Refunded: ${_money(row['refunded'])}')),
                 if (row['counterparty'] case final String name)
                   ListTile(title: Text(name)),
                 if (row['void_reason'] case final String reason)
