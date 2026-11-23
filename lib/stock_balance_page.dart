@@ -9,6 +9,8 @@ import 'app_language.dart';
 import 'app_capabilities.dart';
 import 'branch_records_sync.dart';
 import 'synced_branch_balance_page.dart';
+import 'shared_pos_page.dart';
+import 'shared_pos_session.dart';
 part 'desktop_stock_balance.dart';
 
 class StockBalancePage extends StatefulWidget {
@@ -108,6 +110,12 @@ class _StockBalancePageState extends State<StockBalancePage> {
   );
   @override
   Widget build(BuildContext context) {
+    if (SharedPosSession.current case final session?) {
+      return Scaffold(
+        appBar: AppBar(title: Text(AppLanguage.text('Balance Stock'))),
+        body: SharedPosPage(session: session, kind: SharedPosPageKind.stock),
+      );
+    }
     if (BranchRecordsSync.reader case final reader?) {
       return SyncedBranchBalancePage(reader: reader, accounts: false);
     }

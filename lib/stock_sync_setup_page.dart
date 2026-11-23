@@ -10,6 +10,7 @@ import 'app_database.dart';
 import 'app_language.dart';
 import 'branch_records_sync.dart';
 import 'sale_confirmation_page.dart';
+import 'shared_pos_session.dart';
 import 'stock_sync.dart';
 import 'stock_sync_checkout.dart';
 
@@ -42,7 +43,8 @@ class _StockSyncPreviewEntryState extends State<StockSyncPreviewEntry> {
     final client = _client;
     if (client != null &&
         BranchRecordsSync.publisher?.client != client &&
-        BranchRecordsSync.reader?.client != client) {
+        BranchRecordsSync.reader?.client != client &&
+        SharedPosSession.current?.connection.client != client) {
       unawaited(client.dispose());
     }
     super.dispose();
@@ -103,7 +105,8 @@ class _StockSyncPreviewEntryState extends State<StockSyncPreviewEntry> {
         ),
       );
       if (BranchRecordsSync.publisher?.client != client &&
-          BranchRecordsSync.reader?.client != client) {
+          BranchRecordsSync.reader?.client != client &&
+          SharedPosSession.current?.connection.client != client) {
         await client.auth.signOut(scope: SignOutScope.local);
       }
     } catch (error) {
@@ -121,6 +124,27 @@ class _StockSyncPreviewEntryState extends State<StockSyncPreviewEntry> {
     body: ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        if (SharedPosSession.current case final shared?)
+          ListTile(
+            title: Text(
+              t('Shared POS connected', 'မျှဝေထားသော POS ချိတ်ထားသည်'),
+            ),
+            subtitle: Text(shared.connection.branchCode),
+            trailing: TextButton(
+              onPressed: _busy
+                  ? null
+                  : () async {
+                      setState(() => SharedPosSession.current = null);
+                      await shared.connection.client.auth.signOut(
+                        scope: SignOutScope.local,
+                      );
+                      if (_client != shared.connection.client) {
+                        await shared.connection.client.dispose();
+                      }
+                    },
+              child: Text(t('Disconnect', 'ချိတ်ဆက်မှု ဖြုတ်ရန်')),
+            ),
+          ),
         if (BranchRecordsSync.reader case final reader?)
           ListTile(
             title: Text(
@@ -221,7 +245,8 @@ class _StockSyncPreviewEntryState extends State<StockSyncPreviewEntry> {
           onPressed:
               _busy ||
                   BranchRecordsSync.publisher != null ||
-                  BranchRecordsSync.reader != null
+                  BranchRecordsSync.reader != null ||
+                  SharedPosSession.current != null
               ? null
               : _signIn,
           child: Text(
@@ -234,7 +259,8 @@ class _StockSyncPreviewEntryState extends State<StockSyncPreviewEntry> {
           onPressed:
               _busy ||
                   BranchRecordsSync.publisher != null ||
-                  BranchRecordsSync.reader != null
+                  BranchRecordsSync.reader != null ||
+                  SharedPosSession.current != null
               ? null
               : () {
                   setState(() {
@@ -1154,6 +1180,31 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
                   : () => _run(_publishWindowsRecords),
               child: Text(
                 t('Sync Windows POS records', 'Windows POS စာရင်း ပို့ရန်'),
+              ),
+            ),
+          if (_snapshot != null &&
+              _owner &&
+              SharedPosSession.current == null &&
+              BranchRecordsSync.reader == null &&
+              BranchRecordsSync.publisher == null)
+            OutlinedButton(
+              onPressed: _busy
+                  ? null
+                  : () => _run(() async {
+                      final connection = await _recordsClient();
+                      if (connection == null) return;
+                      final session = SharedPosSession(connection);
+                      await session.load();
+                      if (context.mounted) {
+                        SharedPosSession.current = session;
+                        Navigator.of(context).pop();
+                      }
+                    }),
+              child: Text(
+                t(
+                  'Open shared POS test mode',
+                  'မျှဝေထားသော POS စမ်းသပ်မုဒ် ဖွင့်ရန်',
+                ),
               ),
             ),
           if (_snapshot != null && _owner && _branchRecords != null) ...[

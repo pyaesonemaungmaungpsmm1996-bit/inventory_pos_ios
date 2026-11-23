@@ -23,6 +23,8 @@ import 'user_guide_page.dart';
 import 'feedback_page.dart';
 import 'provider_connection.dart';
 import 'stock_balance_page.dart';
+import 'shared_pos_page.dart';
+import 'shared_pos_session.dart';
 
 import 'dart:async';
 
@@ -361,15 +363,29 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> openPage(String title, Widget page) async {
+    final session = SharedPosSession.current;
+    final sharedKind = switch (page) {
+      SaleInvoicesPage() => SharedPosPageKind.sale,
+      PurchasePage() => SharedPosPageKind.purchase,
+      SaleInvoiceHistoryPage() => SharedPosPageKind.sales,
+      PurchaseHistoryPage() => SharedPosPageKind.purchases,
+      MoneyAccountsPage() => SharedPosPageKind.accounts,
+      _ => null,
+    };
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
         builder: (context) => DesktopScaffold(
           appBar: AppBar(title: Text(AppLanguage.text(title))),
-          body: page,
+          body: session != null && sharedKind != null
+              ? SharedPosPage(session: session, kind: sharedKind)
+              : page,
         ),
       ),
     );
-    if (mounted) await dashboardKey.currentState?.reload();
+    if (mounted) {
+      if (session != SharedPosSession.current) setState(() {});
+      await dashboardKey.currentState?.reload();
+    }
   }
 
   Future<void> dashboardAction(String action, int branch) async {
@@ -533,18 +549,24 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget buildDashboard() => DashboardPage(
-    key: dashboardKey,
-    onAction: dashboardAction,
-    onRecent: recentTransaction,
-    onBranch: (id) {
-      viewedBranch = id;
-      if (AppCapabilities.windows) {
-        desktopWorkspaceNavigation.branchId = id;
-        desktopWorkspaceNavigation.refresh();
-      }
-    },
-  );
+  Widget buildDashboard() {
+    if (SharedPosSession.current case final session?) {
+      return SharedPosPage(session: session, kind: SharedPosPageKind.dashboard);
+    }
+    return DashboardPage(
+      key: dashboardKey,
+      onAction: dashboardAction,
+      onRecent: recentTransaction,
+      onBranch: (id) {
+        viewedBranch = id;
+        if (AppCapabilities.windows) {
+          desktopWorkspaceNavigation.branchId = id;
+          desktopWorkspaceNavigation.refresh();
+        }
+      },
+    );
+  }
+
   Widget buildSale() {
     return DesktopListView(
       padding: const EdgeInsets.fromLTRB(0, 10, 0, 100),
