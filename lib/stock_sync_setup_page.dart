@@ -25,8 +25,11 @@ class _StockSyncPreviewEntryState extends State<StockSyncPreviewEntry> {
   static const _key = String.fromEnvironment('TP_STOCK_SYNC_PUBLISHABLE_KEY');
   final _email = TextEditingController();
   final _password = TextEditingController();
+  final _code = TextEditingController();
   SupabaseClient? _client;
   bool _busy = false;
+  bool _emailCode = true;
+  String? _codeEmail;
   String? _status;
 
   String t(String en, String my) => AppLanguage.current.value == 'my' ? my : en;
@@ -35,6 +38,7 @@ class _StockSyncPreviewEntryState extends State<StockSyncPreviewEntry> {
   void dispose() {
     _email.dispose();
     _password.dispose();
+    _code.dispose();
     final client = _client;
     if (client != null && BranchRecordsSync.publisher?.client != client) {
       unawaited(client.dispose());
@@ -61,13 +65,35 @@ class _StockSyncPreviewEntryState extends State<StockSyncPreviewEntry> {
     });
     try {
       final client = _client ??= SupabaseClient(_url, _key);
-      final response = await client.auth.signInWithPassword(
-        email: _email.text.trim(),
-        password: _password.text,
-      );
+      final email = _email.text.trim();
+      if (_emailCode && _codeEmail != email) {
+        await client.auth.signInWithOtp(email: email, shouldCreateUser: false);
+        if (!mounted) return;
+        setState(() {
+          _codeEmail = email;
+          _code.clear();
+          _status = t(
+            'Check your email for the sign-in code.',
+            'ဝင်ရန် code ကို email ထဲမှာ စစ်ပါ။',
+          );
+        });
+        return;
+      }
+      final response = _emailCode
+          ? await client.auth.verifyOTP(
+              email: email,
+              token: _code.text.trim(),
+              type: OtpType.email,
+            )
+          : await client.auth.signInWithPassword(
+              email: email,
+              password: _password.text,
+            );
       final user = response.user;
       if (!mounted || user == null) return;
       _password.clear();
+      _code.clear();
+      _codeEmail = null;
       await Navigator.of(context).push(
         MaterialPageRoute<void>(
           builder: (_) =>
@@ -122,19 +148,60 @@ class _StockSyncPreviewEntryState extends State<StockSyncPreviewEntry> {
           keyboardType: TextInputType.emailAddress,
           decoration: const InputDecoration(labelText: 'Email'),
         ),
-        TextField(
-          controller: _password,
-          enabled: !_busy,
-          obscureText: true,
-          decoration: InputDecoration(labelText: t('Password', 'စကားဝှက်')),
-        ),
+        if (!_emailCode)
+          TextField(
+            controller: _password,
+            enabled: !_busy,
+            obscureText: true,
+            decoration: InputDecoration(labelText: t('Password', 'စကားဝှက်')),
+          ),
+        if (_emailCode && _codeEmail != null)
+          TextField(
+            controller: _code,
+            enabled: !_busy,
+            keyboardType: TextInputType.number,
+            autofillHints: const [AutofillHints.oneTimeCode],
+            decoration: InputDecoration(
+              labelText: t('Email code', 'Email မှ code'),
+            ),
+          ),
         if (_status != null) SelectableText(_status!),
+        if (_emailCode && _codeEmail != null)
+          TextButton(
+            onPressed: _busy
+                ? null
+                : () {
+                    setState(() => _codeEmail = null);
+                    unawaited(_signIn());
+                  },
+            child: Text(t('Send a new code', 'Code အသစ် ပို့ရန်')),
+          ),
         FilledButton(
           onPressed: _busy || BranchRecordsSync.publisher != null
               ? null
               : _signIn,
           child: Text(
-            t('Sign in to test project', 'စမ်းသပ် project သို့ ဝင်ရန်'),
+            _emailCode && _codeEmail == null
+                ? t('Send email code', 'Email code ပို့ရန်')
+                : t('Sign in to test project', 'စမ်းသပ် project သို့ ဝင်ရန်'),
+          ),
+        ),
+        TextButton(
+          onPressed: _busy || BranchRecordsSync.publisher != null
+              ? null
+              : () {
+                  setState(() {
+                    _emailCode = !_emailCode;
+                    _codeEmail = null;
+                    _code.clear();
+                    _password.clear();
+                    _status = null;
+                  });
+                },
+          child: Text(
+            _emailCode
+                ? t('Use password', 'စကားဝှက်ဖြင့် ဝင်ရန်')
+                : t('Use email code', 'Email code ဖြင့် ဝင်ရန်'),
           ),
         ),
       ],
