@@ -129,7 +129,10 @@ begin
       or status is null or status not in ('posted', 'void')
       or total is null or total < 0 or paid is null or paid not between 0 and total
       or due is null or due <> total - paid
-  ) then raise exception 'Invalid archived voucher'; end if;
+  ) or exists (
+    select 1 from jsonb_to_recordset(document->'history') v(kind text, number text)
+    group by v.kind,v.number having count(*) > 1
+  ) then raise exception 'Invalid or repeated archived voucher'; end if;
   insert into tp_inventory_sync.opening_imports(shop_id, branch_id, digest, history)
     values (shop, machine.branch_id, fingerprint, document->'history');
   perform tp_inventory_sync.signal(shop);
@@ -172,6 +175,7 @@ begin
       union all
       select value || jsonb_build_object('occurred_at',
         (value->>'invoice_date')::date::timestamp at time zone 'Asia/Yangon', 'archived', true)
+        || jsonb_build_object('archive_key', concat(value->>'kind', ':', value->>'number'))
       from jsonb_array_elements(history)
       where ((value->>'invoice_date')::date::timestamp at time zone 'Asia/Yangon') >= from_time
         and ((value->>'invoice_date')::date::timestamp at time zone 'Asia/Yangon') < until_time

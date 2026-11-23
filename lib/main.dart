@@ -370,6 +370,7 @@ class _HomePageState extends State<HomePage> {
       SaleInvoiceHistoryPage() => SharedPosPageKind.sales,
       PurchaseHistoryPage() => SharedPosPageKind.purchases,
       MoneyAccountsPage() => SharedPosPageKind.accounts,
+      AccountTransferPage() => SharedPosPageKind.transfer,
       CustomerLedgerPage() => SharedPosPageKind.customerBalances,
       SupplierLedgerPage() => SharedPosPageKind.supplierBalances,
       ExpensesPage(:final historyOnly) =>

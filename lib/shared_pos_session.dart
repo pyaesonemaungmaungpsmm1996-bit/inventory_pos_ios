@@ -152,6 +152,25 @@ class SharedPosSession {
     });
   });
 
+  Future<void> transfer(String source, String destination, int amount) =>
+      _exclusive(() async {
+        if (await hasPending()) {
+          throw StateError('Retry the pending transaction first.');
+        }
+        if (source == destination || amount <= 0 || amount > 9999999999999) {
+          throw ArgumentError(
+            'Choose two different accounts and enter a valid amount.',
+          );
+        }
+        await _stage({
+          'kind': 'transfer',
+          'amount_minor': amount,
+          'source_account': source,
+          'target_account': destination,
+          'occurred_at': DateTime.now().toUtc().toIso8601String(),
+        });
+      });
+
   Future<void> expense(String account, int amount, String note) =>
       _exclusive(() async {
         if (await hasPending()) {
@@ -219,21 +238,25 @@ class SharedPosSession {
         await _stage({'kind': 'void', 'voucher': voucher, 'reason': clean});
       });
 
-  Future<void> settle(String voucher, String account, int amount) =>
-      _exclusive(() async {
-        if (await hasPending()) {
-          throw StateError('Retry the pending voucher first.');
-        }
-        if (amount <= 0 || amount > 9999999999999) {
-          throw ArgumentError('Enter a valid payment amount.');
-        }
-        await _stage({
-          'kind': 'settlement',
-          'voucher': voucher,
-          'account': account,
-          'amount_minor': amount,
-        });
-      });
+  Future<void> settle(
+    String voucher,
+    String account,
+    int amount, {
+    bool archived = false,
+  }) => _exclusive(() async {
+    if (await hasPending()) {
+      throw StateError('Retry the pending voucher first.');
+    }
+    if (amount <= 0 || amount > 9999999999999) {
+      throw ArgumentError('Enter a valid payment amount.');
+    }
+    await _stage({
+      'kind': archived ? 'archived_settlement' : 'settlement',
+      'voucher': voucher,
+      'account': account,
+      'amount_minor': amount,
+    });
+  });
 
   Future<void> _exclusive(Future<void> Function() action) async {
     if (_posting) throw StateError('A voucher is already being posted.');
@@ -282,15 +305,19 @@ class SharedPosSession {
             'reason': command['reason'],
           },
         );
-      } else if (command['kind'] == 'settlement') {
+      } else if (command['kind'] == 'settlement' ||
+          command['kind'] == 'archived_settlement') {
+        final archived = command['kind'] == 'archived_settlement';
         await connection.client.rpc(
-          'tp_stock_sync_settle_voucher',
+          archived
+              ? 'tp_stock_sync_settle_archived'
+              : 'tp_stock_sync_settle_voucher',
           params: {
             'shop': connection.shop,
             'device': connection.device,
             'secret': connection.secret,
             'operation': pending['operation'],
-            'voucher': command['voucher'],
+            (archived ? 'archive_key' : 'voucher'): command['voucher'],
             'account': command['account'],
             'amount_minor': command['amount_minor'],
           },

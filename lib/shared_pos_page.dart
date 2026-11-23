@@ -13,6 +13,7 @@ enum SharedPosPageKind {
   purchases,
   stock,
   accounts,
+  transfer,
   customerBalances,
   supplierBalances,
   expense,
@@ -453,9 +454,10 @@ class _SharedPosPageState extends State<SharedPosPage> {
     if (!mounted || payment == null) return;
     await _run(
       () => widget.session.settle(
-        voucher['id'] as String,
+        (voucher['archive_key'] ?? voucher['id']) as String,
         payment.account,
         payment.amount,
+        archived: voucher['archived'] == true,
       ),
     );
   }
@@ -558,6 +560,83 @@ class _SharedPosPageState extends State<SharedPosPage> {
     await _run(
       () =>
           widget.session.expense(expense.account, expense.amount, expense.note),
+    );
+  }
+
+  Future<void> _transfer() async {
+    String? source, destination;
+    var amount = 0;
+    final transfer =
+        await showDialog<({String source, String destination, int amount})>(
+          context: context,
+          builder: (context) => StatefulBuilder(
+            builder: (context, update) {
+              final accounts = [
+                for (final row in _rows('accounts'))
+                  DropdownMenuItem(
+                    value: row['id'] as String,
+                    child: Text('${row['name']}'),
+                  ),
+              ];
+              return AlertDialog(
+                title: const Text('Account transfer'),
+                content: SingleChildScrollView(
+                  child: Column(
+                    children: [
+                      DropdownButtonFormField<String>(
+                        decoration: const InputDecoration(
+                          labelText: 'From account',
+                        ),
+                        items: accounts,
+                        onChanged: (value) => update(() => source = value),
+                      ),
+                      DropdownButtonFormField<String>(
+                        decoration: const InputDecoration(
+                          labelText: 'To account',
+                        ),
+                        items: accounts,
+                        onChanged: (value) => update(() => destination = value),
+                      ),
+                      TextField(
+                        decoration: const InputDecoration(labelText: 'Amount'),
+                        keyboardType: TextInputType.number,
+                        onChanged: (value) =>
+                            update(() => amount = int.tryParse(value) ?? 0),
+                      ),
+                    ],
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Cancel'),
+                  ),
+                  FilledButton(
+                    onPressed:
+                        source == null ||
+                            destination == null ||
+                            source == destination ||
+                            amount <= 0
+                        ? null
+                        : () => Navigator.pop(context, (
+                            source: source!,
+                            destination: destination!,
+                            amount: amount,
+                          )),
+                    child: const Text('Record transfer'),
+                  ),
+                ],
+              );
+            },
+          ),
+        );
+    if (!mounted || transfer == null) return;
+    await _run(
+      () => widget.session.transfer(
+        transfer.source,
+        transfer.destination,
+        transfer.amount,
+      ),
     );
   }
 
@@ -757,7 +836,15 @@ class _SharedPosPageState extends State<SharedPosPage> {
               title: Text('${row['code']} · ${row['name']}'),
               trailing: Text('${row['on_hand']}'),
             ),
-        if (kind == SharedPosPageKind.accounts)
+        if (_view != null && kind == SharedPosPageKind.transfer)
+          FilledButton(
+            onPressed: _busy || _pending || accounts.length < 2
+                ? null
+                : _transfer,
+            child: const Text('New account transfer'),
+          ),
+        if (kind == SharedPosPageKind.accounts ||
+            kind == SharedPosPageKind.transfer)
           for (final row in accounts)
             ListTile(
               title: Text('${row['name']}'),
@@ -829,7 +916,8 @@ class _SharedPosPageState extends State<SharedPosPage> {
                         : () => _voidVoucher(row),
                     child: const Text('Void voucher'),
                   ),
-                if (row['archived'] != true && (row['due'] as int) > 0)
+                if ((row['archive_key'] != null || row['id'] != null) &&
+                    (row['due'] as int) > 0)
                   OutlinedButton(
                     onPressed: _busy || _pending ? null : () => _settle(row),
                     child: Text(
