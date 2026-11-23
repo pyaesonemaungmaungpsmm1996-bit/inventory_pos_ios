@@ -70,6 +70,18 @@ jobs:
             ios-unsigned) flutter build ios --release --no-pub --no-codesign "${defines[@]}" ;;
           esac
 
+      - name: Verify Windows portable runtime
+        if: matrix.target == 'windows-portable'
+        shell: pwsh
+        env:
+          WINDOWS_BUNDLE: ${{ matrix.artifact }}
+        run: |
+          foreach ($name in 'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll') {
+            if (-not (Test-Path -LiteralPath (Join-Path $env:WINDOWS_BUNDLE $name) -PathType Leaf)) {
+              throw "Missing Windows runtime dependency: $name"
+            }
+          }
+
       - uses: actions/upload-artifact@v4
         with:
           name: toe-pwar-${{ matrix.target }}-${{ github.sha }}

@@ -89,6 +89,13 @@ endif()
 set(INSTALL_BUNDLE_DATA_DIR "${CMAKE_INSTALL_PREFIX}/data")
 set(INSTALL_BUNDLE_LIB_DIR "${CMAKE_INSTALL_PREFIX}")
 
+# Keep the MSVC redistributable DLLs beside the executable in portable builds.
+if(MSVC)
+  set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION "${INSTALL_BUNDLE_LIB_DIR}")
+  set(CMAKE_INSTALL_SYSTEM_RUNTIME_COMPONENT Runtime)
+  include(InstallRequiredSystemLibraries)
+endif()
+
 install(TARGETS ${BINARY_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
   COMPONENT Runtime)
 
