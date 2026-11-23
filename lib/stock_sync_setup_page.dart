@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -7,6 +8,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'app_database.dart';
 import 'app_language.dart';
+import 'branch_records_sync.dart';
 import 'sale_confirmation_page.dart';
 import 'stock_sync.dart';
 import 'stock_sync_checkout.dart';
@@ -34,7 +36,9 @@ class _StockSyncPreviewEntryState extends State<StockSyncPreviewEntry> {
     _email.dispose();
     _password.dispose();
     final client = _client;
-    if (client != null) unawaited(client.dispose());
+    if (client != null && BranchRecordsSync.publisher?.client != client) {
+      unawaited(client.dispose());
+    }
     super.dispose();
   }
 
@@ -70,7 +74,9 @@ class _StockSyncPreviewEntryState extends State<StockSyncPreviewEntry> {
               StockSyncSetupPage(api: StockSyncApi(client), userId: user.id),
         ),
       );
-      await client.auth.signOut(scope: SignOutScope.local);
+      if (BranchRecordsSync.publisher?.client != client) {
+        await client.auth.signOut(scope: SignOutScope.local);
+      }
     } catch (error) {
       if (mounted) setState(() => _status = error.toString());
     } finally {
@@ -86,6 +92,30 @@ class _StockSyncPreviewEntryState extends State<StockSyncPreviewEntry> {
     body: ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        if (BranchRecordsSync.publisher case final publisher?)
+          ListTile(
+            title: Text(
+              t('Windows records sync is on', 'Windows စာရင်း ပို့နေသည်'),
+            ),
+            subtitle: Text(publisher.error?.toString() ?? publisher.branchCode),
+            trailing: TextButton(
+              onPressed: _busy
+                  ? null
+                  : () async {
+                      setState(() => _busy = true);
+                      await publisher.stop();
+                      BranchRecordsSync.publisher = null;
+                      await publisher.client.auth.signOut(
+                        scope: SignOutScope.local,
+                      );
+                      if (_client != publisher.client) {
+                        await publisher.client.dispose();
+                      }
+                      if (mounted) setState(() => _busy = false);
+                    },
+              child: Text(t('Stop sync', 'စာရင်းပို့ခြင်း ရပ်ရန်')),
+            ),
+          ),
         TextField(
           controller: _email,
           enabled: !_busy,
@@ -100,7 +130,9 @@ class _StockSyncPreviewEntryState extends State<StockSyncPreviewEntry> {
         ),
         if (_status != null) SelectableText(_status!),
         FilledButton(
-          onPressed: _busy ? null : _signIn,
+          onPressed: _busy || BranchRecordsSync.publisher != null
+              ? null
+              : _signIn,
           child: Text(
             t('Sign in to test project', 'စမ်းသပ် project သို့ ဝင်ရန်'),
           ),
@@ -129,6 +161,7 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
   List<Map<String, dynamic>> _shops = [];
   Map<String, dynamic>? _report;
   Map<String, dynamic>? _snapshot;
+  Map<String, dynamic>? _branchRecords;
   String? _shop;
   String? _branch;
   String? _error;
@@ -154,6 +187,62 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
   }
 
   bool get _owner => _selected?['role'] == 'owner';
+
+  Future<BranchRecordsSync?> _recordsClient() async {
+    final shop = _shop;
+    final branch = _branch;
+    if (shop == null || branch == null) return null;
+    final identity = await _identity(shop, branch);
+    if (identity == null) return null;
+    final code =
+        rows(_selected?['branches'])
+                .singleWhere((row) => row['id'] == branch)['code']
+            as String;
+    return BranchRecordsSync(
+      client: widget.api.client,
+      shop: shop,
+      branchCode: code,
+      device: identity['id']!,
+      secret: identity['secret']!,
+    );
+  }
+
+  Future<void> _publishWindowsRecords() async {
+    final sync = await _recordsClient();
+    if (sync == null || BranchRecordsSync.publisher != null) return;
+    await sync.start();
+    BranchRecordsSync.publisher = sync;
+  }
+
+  Iterable<Widget> _recordSections(Map<String, dynamic> records) sync* {
+    yield Text(t('Synced Windows records', 'Windows မှ တင်ထားသော စာရင်းများ'));
+    yield Text('${records['updated_at']}');
+    for (final (key, label) in [
+      ('stock', t('Balance stock', 'ပစ္စည်းလက်ကျန်')),
+      ('sales', t('Sale history', 'အရောင်းမှတ်တမ်း')),
+      ('purchases', t('Purchase history', 'အဝယ်မှတ်တမ်း')),
+    ]) {
+      final items = rows(records[key]);
+      yield ExpansionTile(
+        title: Text('$label (${items.length})'),
+        children: [
+          for (final row in items)
+            ListTile(
+              title: Text(
+                key == 'stock'
+                    ? '${row['item_code']} · ${row['name']}'
+                    : '${row['number']} · ${row['invoice_date']}',
+              ),
+              subtitle: Text(
+                key == 'stock'
+                    ? '${t('Stock', 'လက်ကျန်')}: ${row['stock']}'
+                    : '${row['total']} ${row['currency_code']} · ${row['status']}',
+              ),
+            ),
+        ],
+      );
+    }
+  }
 
   @override
   void initState() {
@@ -216,12 +305,14 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
         : branches.firstOrNull?['id'] as String?;
     if (branch != _branch) {
       _snapshot = null;
+      _branchRecords = null;
       _pendingSales = 0;
     }
     _branch = branch;
     if (changed) {
       _report = null;
       _snapshot = null;
+      _branchRecords = null;
       _pendingSales = 0;
     }
     _pendingAdmin =
@@ -260,6 +351,10 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
       secret: device['secret']!,
     );
     if (!approved) return;
+    if (_owner && !Platform.isWindows) {
+      final records = await _recordsClient();
+      _branchRecords = await records?.read();
+    }
     final db = await AppDatabase.instance.database;
     final store = OfflineStockStore(shop: selection, device: device['id']!);
     await OfflineStockStore.ensureTables(db);
@@ -903,6 +998,7 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
                       await _updates?.cancel();
                       _updates = null;
                       _snapshot = null;
+                      _branchRecords = null;
                       _report = null;
                       _pendingSales = 0;
                       _shop = value;
@@ -925,6 +1021,7 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
                   ? null
                   : (value) => _run(() async {
                       _snapshot = null;
+                      _branchRecords = null;
                       _pendingSales = 0;
                       _branch = value;
                       await _refresh();
@@ -936,6 +1033,17 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
                 child: Text(t('Enroll this device', 'ဤစက်ကို စာရင်းသွင်းရန်')),
               ),
           ],
+          if (_snapshot != null && _owner && Platform.isWindows)
+            OutlinedButton(
+              onPressed: _busy || BranchRecordsSync.publisher != null
+                  ? null
+                  : () => _run(_publishWindowsRecords),
+              child: Text(
+                t('Sync Windows POS records', 'Windows POS စာရင်း ပို့ရန်'),
+              ),
+            ),
+          if (_snapshot != null && _owner && _branchRecords != null)
+            ..._recordSections(_branchRecords!),
           if (_snapshot != null &&
               const [
                 'owner',
