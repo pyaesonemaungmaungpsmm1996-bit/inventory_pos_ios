@@ -18,17 +18,26 @@ class SharedPosSession {
 
   Future<Map<String, dynamic>> load() async {
     final now = DateTime.now().toUtc();
-    final result = await connection.client.rpc(
-      'tp_stock_sync_branch_view',
-      params: {
-        'shop': connection.shop,
-        'device': connection.device,
-        'secret': connection.secret,
-        'from_time': now.subtract(const Duration(days: 31)).toIso8601String(),
-        'until_time': now.add(const Duration(minutes: 5)).toIso8601String(),
-      },
-    );
-    return Map<String, dynamic>.from(result as Map);
+    final identity = {
+      'shop': connection.shop,
+      'device': connection.device,
+      'secret': connection.secret,
+    };
+    final results = await Future.wait([
+      connection.client.rpc(
+        'tp_stock_sync_branch_view',
+        params: {
+          ...identity,
+          'from_time': now.subtract(const Duration(days: 31)).toIso8601String(),
+          'until_time': now.add(const Duration(minutes: 5)).toIso8601String(),
+        },
+      ),
+      connection.client.rpc('tp_stock_sync_branch_serials', params: identity),
+    ]);
+    return {
+      ...Map<String, dynamic>.from(results[0] as Map),
+      'serials': Map<String, dynamic>.from(results[1] as Map),
+    };
   }
 
   Future<bool> hasPending() async =>
@@ -40,6 +49,7 @@ class SharedPosSession {
     required String account,
     required int quantity,
     required int unitPrice,
+    List<String>? serials,
   }) => _exclusive(() async {
     if (await hasPending()) {
       throw StateError('Retry the pending voucher first.');
@@ -54,18 +64,41 @@ class SharedPosSession {
       'kind': kind,
       'occurred_at': DateTime.now().toUtc().toIso8601String(),
       'lines': [
-        {'product_id': product, 'quantity': quantity, 'unit_minor': unitPrice},
+        {
+          'product_id': product,
+          'quantity': quantity,
+          'unit_minor': unitPrice,
+          'serials': ?serials,
+        },
       ],
       'payments': [
         {'account_id': account, 'amount_minor': quantity * unitPrice},
       ],
     };
+    await _stage(command);
+  });
+
+  Future<void> deposit(String account, int amount) => _exclusive(() async {
+    if (await hasPending()) {
+      throw StateError('Retry the pending voucher first.');
+    }
+    if (amount <= 0 || amount > 9999999999999) {
+      throw ArgumentError('Enter a valid cash amount.');
+    }
+    await _stage({
+      'kind': 'deposit',
+      'amount_minor': amount,
+      'target_account': account,
+    });
+  });
+
+  Future<void> _stage(Map<String, Object?> command) async {
     await _storage.write(
       key: _pendingKey,
       value: jsonEncode({'operation': newStockSyncId(), 'command': command}),
     );
     await _sendPending();
-  });
+  }
 
   Future<void> retry() => _exclusive(_sendPending);
 

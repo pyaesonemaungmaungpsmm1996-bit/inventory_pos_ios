@@ -27,6 +27,8 @@ class SharedPosPage extends StatefulWidget {
 class _SharedPosPageState extends State<SharedPosPage> {
   final _quantity = TextEditingController(text: '1');
   final _price = TextEditingController();
+  final _serialInput = TextEditingController();
+  String? _selectedSerial;
   Map<String, dynamic>? _view;
   String? _product, _account, _message;
   bool _busy = false, _pending = false;
@@ -51,6 +53,7 @@ class _SharedPosPageState extends State<SharedPosPage> {
     _timer?.cancel();
     _quantity.dispose();
     _price.dispose();
+    _serialInput.dispose();
     super.dispose();
   }
 
@@ -89,6 +92,17 @@ class _SharedPosPageState extends State<SharedPosPage> {
         .toList();
     final quantity = int.tryParse(_quantity.text) ?? 0;
     final price = int.tryParse(_price.text) ?? 0;
+    final availableSerials = (_view?['serials'] as Map?)?[_product] as List?;
+    final tracked = availableSerials != null;
+    final serials = !tracked
+        ? null
+        : _sale
+        ? [?_selectedSerial]
+        : _serialInput.text
+              .split('\n')
+              .map((value) => value.trim())
+              .where((value) => value.isNotEmpty)
+              .toList();
     return Column(
       children: [
         DropdownButtonFormField<String>(
@@ -110,6 +124,8 @@ class _SharedPosPageState extends State<SharedPosPage> {
               ? null
               : (id) => setState(() {
                   _product = id;
+                  _selectedSerial = null;
+                  _serialInput.clear();
                   if (_sale) {
                     _price.text =
                         '${products.firstWhere((row) => row['id'] == id)['price']}';
@@ -123,6 +139,32 @@ class _SharedPosPageState extends State<SharedPosPage> {
           decoration: const InputDecoration(labelText: 'Quantity'),
           onChanged: (_) => setState(() {}),
         ),
+        if (tracked && _sale)
+          DropdownButtonFormField<String>(
+            key: ValueKey('serial:$_product'),
+            initialValue: _selectedSerial,
+            decoration: const InputDecoration(labelText: 'Serial number'),
+            items: [
+              for (final serial in availableSerials.cast<String>())
+                DropdownMenuItem(value: serial, child: Text(serial)),
+            ],
+            onChanged: _busy || _pending
+                ? null
+                : (serial) => setState(() {
+                    _selectedSerial = serial;
+                    _quantity.text = '1';
+                  }),
+          ),
+        if (tracked && !_sale)
+          TextField(
+            controller: _serialInput,
+            enabled: !_busy && !_pending,
+            maxLines: 3,
+            decoration: const InputDecoration(
+              labelText: 'Serials, one per line',
+            ),
+            onChanged: (_) => setState(() {}),
+          ),
         TextField(
           controller: _price,
           keyboardType: TextInputType.number,
@@ -157,7 +199,8 @@ class _SharedPosPageState extends State<SharedPosPage> {
                     _product == null ||
                     _account == null ||
                     quantity <= 0 ||
-                    price <= 0
+                    price <= 0 ||
+                    (serials != null && serials.length != quantity)
                 ? null
                 : () => _run(() async {
                     await widget.session.post(
@@ -166,11 +209,14 @@ class _SharedPosPageState extends State<SharedPosPage> {
                       account: _account!,
                       quantity: quantity,
                       unitPrice: price,
+                      serials: serials,
                     );
                     if (mounted) {
                       _quantity.text = '1';
                       _product = null;
                       _price.clear();
+                      _serialInput.clear();
+                      _selectedSerial = null;
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(content: Text('Voucher saved')),
                       );

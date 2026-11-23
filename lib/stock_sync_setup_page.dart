@@ -881,6 +881,48 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
     });
   }
 
+  Future<void> _fundTestCash() async {
+    final values = await _ask(t('Add test cash', 'စမ်းသပ်ငွေ ထည့်ရန်'), [
+      t('Cash account name', 'ငွေအကောင့်နာမည်'),
+      t('Amount (MMK)', 'ငွေပမာဏ (ကျပ်)'),
+    ]);
+    if (values == null) return;
+    await _run(() async {
+      final connection = await _recordsClient();
+      final account = rows(_snapshot?['accounts'])
+          .where((row) => row['kind'] == 'cash' && row['name'] == values[0])
+          .firstOrNull;
+      final amount = int.tryParse(values[1]);
+      if (connection == null || account == null || amount == null) {
+        throw StateError('Check the cash account and amount.');
+      }
+      await SharedPosSession(connection)
+          .deposit(account['id'] as String, amount);
+      await _refresh();
+    });
+  }
+
+  Future<void> _enableSerial() async {
+    final shop = _shop;
+    if (shop == null) return;
+    final values = await _ask(
+      t('Enable serial tracking', 'Serial မှတ်တမ်း ဖွင့်ရန်'),
+      [t('Item code', 'ပစ္စည်းကုဒ်')],
+    );
+    if (values == null) return;
+    await _run(() async {
+      final product = rows(_selected?['products'])
+          .where((item) => item['code'] == values.single)
+          .firstOrNull;
+      if (product == null) throw StateError('Item code not found.');
+      await widget.api.client.rpc(
+        'tp_stock_sync_enable_serial',
+        params: {'shop': shop, 'product': product['id']},
+      );
+      await _refresh();
+    });
+  }
+
   Future<void> _openingStock() async {
     final shop = _shop;
     final branch = _branch;
@@ -1307,8 +1349,18 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
                   child: Text(t('Add product', 'ပစ္စည်းထည့်ရန်')),
                 ),
                 OutlinedButton(
+                  onPressed: _busy ? null : _enableSerial,
+                  child: Text(
+                    t('Enable serial tracking', 'Serial မှတ်တမ်း ဖွင့်ရန်'),
+                  ),
+                ),
+                OutlinedButton(
                   onPressed: _busy || _branch == null ? null : _addCashAccount,
                   child: Text(t('Add cash account', 'Cash account ထည့်ရန်')),
+                ),
+                OutlinedButton(
+                  onPressed: _busy || _snapshot == null ? null : _fundTestCash,
+                  child: Text(t('Add test cash', 'စမ်းသပ်ငွေ ထည့်ရန်')),
                 ),
                 OutlinedButton(
                   onPressed: _busy || _snapshot == null ? null : _openingStock,
