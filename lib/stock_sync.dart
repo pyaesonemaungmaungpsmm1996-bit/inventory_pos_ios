@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:crypto/crypto.dart';
+import 'package:http/http.dart' as http;
 import 'package:sqflite/sqflite.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -25,10 +26,40 @@ String newStockSyncSecret() {
   ).map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
 }
 
+class _StockSyncPkceStorage extends GotrueAsyncStorage {
+  final _values = <String, String>{};
+
+  @override
+  Future<String?> getItem({required String key}) async => _values[key];
+
+  @override
+  Future<void> setItem({required String key, required String value}) async {
+    _values[key] = value;
+  }
+
+  @override
+  Future<void> removeItem({required String key}) async {
+    _values.remove(key);
+  }
+}
+
 class StockSyncApi {
   final SupabaseClient client;
 
   StockSyncApi(this.client);
+
+  static SupabaseClient connect(
+    String url,
+    String key, {
+    http.Client? httpClient,
+  }) {
+    return SupabaseClient(
+      url,
+      key,
+      httpClient: httpClient,
+      authOptions: AuthClientOptions(pkceAsyncStorage: _StockSyncPkceStorage()),
+    );
+  }
 
   Future<List<Map<String, dynamic>>> catalog() async {
     final data = await client.rpc('tp_stock_sync_catalog') as List;

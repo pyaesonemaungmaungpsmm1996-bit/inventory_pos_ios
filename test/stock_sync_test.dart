@@ -1,5 +1,9 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:inventory_pos/stock_sync.dart';
 import 'package:inventory_pos/stock_sync_setup_page.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -16,6 +20,32 @@ void main() {
     expect(find.text('Password'), findsOneWidget);
     expect(find.text('Sign in to test project'), findsOneWidget);
   });
+
+  test(
+    'email code request works on the standalone stock sync client',
+    () async {
+      final requests = <http.Request>[];
+      final client = StockSyncApi.connect(
+        'https://stock-sync.example.test',
+        'sb_publishable_fixture',
+        httpClient: MockClient((request) async {
+          requests.add(request);
+          return http.Response('{}', 200);
+        }),
+      );
+      addTearDown(client.dispose);
+      await client.auth.signInWithOtp(
+        email: 'owner@example.test',
+        shouldCreateUser: false,
+      );
+      final request = requests.single;
+      expect(request.url.path, '/auth/v1/otp');
+      final body = jsonDecode(request.body) as Map<String, dynamic>;
+      expect(body['create_user'], false);
+      expect(body['code_challenge'], isNotEmpty);
+      expect(body['code_challenge_method'], 's256');
+    },
+  );
 
   late Database db;
   const store = OfflineStockStore(shop: 'shop', device: 'device-a');

@@ -64,7 +64,7 @@ class _StockSyncPreviewEntryState extends State<StockSyncPreviewEntry> {
       _status = null;
     });
     try {
-      final client = _client ??= SupabaseClient(_url, _key);
+      final client = _client ??= StockSyncApi.connect(_url, _key);
       final email = _email.text.trim();
       if (_emailCode && _codeEmail != email) {
         await client.auth.signInWithOtp(email: email, shouldCreateUser: false);
