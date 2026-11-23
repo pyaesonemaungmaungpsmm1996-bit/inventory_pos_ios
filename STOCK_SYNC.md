@@ -10,10 +10,11 @@ This work is based on the existing `inventory_pos_ios` Flutter app. The sync sch
 4. Add the other test login as a cashier by its Supabase User ID. Enroll its device, approve it on the owner screen, and allocate stock by item and device. Compare the Owner report and both device allowance views.
 5. To run the isolated SQLite tests, use `flutter test test/stock_sync_test.dart`. Run the full suite with `flutter test` before merging.
 
-## Current integration boundary
+## Offline checkout pilot
 
-The gated Flutter screen covers setup, device approval, allocations, and the Owner report for synced events. The sync RPCs support stock intake and sales, expenses and cash/bank ledger postings. A SQLite outbox can atomically reserve local offline allowance inside a caller-supplied voucher transaction, and supports retry with the same operation ID.
+1. In the legacy app create a local test branch with the same **branch code** as the isolated sync branch. Create test products with identical **item codes** and local cash accounts with identical **names**. Enter fresh local stock and matching cloud opening stock. Code and name matches must be unique.
+2. Save a normal sale draft in the local test branch. Open **Members & roles → Stock sync test** while online, sign in to the isolated project, select that branch and verify the approved device has an allocation.
+3. Disconnect the device and choose **Offline checkout test**. Select the saved draft, enter the full payment on a mapped cash account and confirm. The app opens the existing invoice detail/printing screen. The same SQLite transaction records the invoice, stock and cash changes, local allocation consumption and one durable upload.
+4. Reconnect with the sync screen still signed in, or reopen it and sign in again. It retries the upload on refresh and its polling timer. The other device's sync preview and Owner report can pick up the new balance and cash entry. Keep the regular local-only workflow out of this test branch.
 
-Legacy checkout, invoice printing, purchases, customer and supplier payments, expenses, adjustments, returns/voids, and money transfers still call their original local transaction code. They are not connected to the new RPCs or the outbox. The synced screens should therefore only be used for isolated testing.
-
-Before the preview becomes the regular POS workflow, connect branch/product/account identities and the existing invoice transaction to the outbox, add the online confirmation and local projection recovery flow, and wire the remaining money/stock postings into the shared ledger. Then verify the existing invoice output and accounting in the full app on Windows, Android, and iPhone with fresh data.
+The pilot supports new paid-in-full MMK sales with untracked items. It requires previously cached allowances and a signed-in preview session before going offline. Synced pilot vouchers can be viewed and printed. Edit, return, void and delete need a cloud reversal protocol before enabling them on these vouchers. Shared online checkout, inventory and stock projection in the regular screens, general purchases and expenses, durable session recovery after app restart while offline, and install builds on all three platforms are release work.

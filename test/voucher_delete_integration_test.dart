@@ -5,6 +5,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite/sqflite.dart' as sq;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' as ffi;
 import 'package:inventory_pos/app_database.dart';
+import 'package:inventory_pos/stock_sync.dart';
+import 'package:inventory_pos/stock_sync_checkout.dart';
 import 'package:inventory_pos/account_transfer_repository.dart';
 import 'package:inventory_pos/subscription_runtime.dart';
 
@@ -79,4 +81,41 @@ void main(){
   await app.deleteVoucher(kind:'sale',id:sale);
   expect(await db.rawQuery('PRAGMA foreign_key_check'),isEmpty);
  });
+ test('approved offline checkout commits the existing invoice, cash, stock and one upload together',()async{
+  final store=OfflineStockStore(shop:'checkout-shop',device:'checkout-device');
+  await OfflineStockStore.ensureTables(db);
+  const cloudProduct='00000000-0000-4000-8000-000000000001';
+  const cloudAccount='00000000-0000-4000-8000-000000000002';
+  final snapshot=<String,dynamic>{'currency':'MMK','accounts':[{'id':cloudAccount,'kind':'cash'}]};
+  await store.applySnapshot(db,[
+    {'id':cloudProduct,'device_granted':1,'device_consumed':0},
+  ],snapshot:snapshot);
+  final checkout=StockSyncCheckout(
+    store:store,localBranchId:branch,products:{product:cloudProduct},cashAccounts:{cash:cloudAccount},
+  );
+  final draft=await app.saveSaleDraft(branchId:branch,saveCustomer:false,customerName:'',customerPhone:'',customerCompany:'',customerAddress:'',employeeId:employee,invoiceDate:day,discountType:'amount',discountValue:15,items:[{'product_id':product,'qty':2,'price':100}]);
+  final revision=(await app.getSaleDraft(draft))['revision'] as int;
+  Future<int> confirm()=>app.confirmSaleDraft(draftId:draft,revision:revision,paymentDate:day,payments:[{'account_id':cash,'amount':185}],offlineCheckout:checkout);
+  final beforeStock=await stock(), beforeCash=await balance(cash);
+  await expectLater(confirm(),throwsStateError);
+  expect(await stock(),beforeStock);
+  expect(await balance(cash),beforeCash);
+  expect(await db.query('sale_invoices',where:'draft_id=?',whereArgs:[draft]),isEmpty);
+  expect(await store.pending(db),isEmpty);
+  await store.applySnapshot(db,[{'id':cloudProduct,'device_granted':2,'device_consumed':0}],snapshot:snapshot);
+  final id=await confirm();
+  expect(await confirm(),id);
+  expect(await stock(),beforeStock-2);
+  expect(await balance(cash),beforeCash+185);
+  expect(await store.remaining(db,cloudProduct),0);
+  final pending=(await store.pending(db)).single;
+  expect(pending.command['lines'],[{'product_id':cloudProduct,'quantity':2,'unit_minor':100,'line_minor':185}]);
+  expect(pending.command['payments'],[{'account_id':cloudAccount,'amount_minor':185}]);
+  expect(pending.command['voucher'],isNotEmpty);
+  expect((await app.getConfirmedSale(id))['total'],185);
+  await expectLater(app.deleteVoucher(kind:'sale',id:id),throwsStateError);
+  expect(await stock(),beforeStock-2);
+  expect(await balance(cash),beforeCash+185);
+ });
+
 }

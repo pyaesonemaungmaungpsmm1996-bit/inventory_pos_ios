@@ -385,6 +385,14 @@ class OfflineStockStore {
     }
   }
 
+  Future<int> pendingCount(Database db) async {
+    final rows = await db.rawQuery(
+      'SELECT COUNT(*) AS total FROM tp_sync_outbox WHERE shop=? AND device=? AND payload IS NOT NULL',
+      [shop, device],
+    );
+    return rows.single['total'] as int;
+  }
+
   Future<List<PendingStockSale>> pending(Database db) async {
     final rows = await db.query(
       'tp_sync_outbox',

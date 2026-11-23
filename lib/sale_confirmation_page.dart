@@ -19,6 +19,7 @@ import 'app_database.dart';
 import 'invoice_void_dialog.dart';
 import 'voucher_code.dart';
 import 'app_language.dart';
+import 'stock_sync_checkout.dart';
 
 String _t(String en, String my) => AppLanguage.current.value == 'my' ? my : en;
 String _date(DateTime d) =>
@@ -27,8 +28,13 @@ String _money(int amount) => AppCurrency.format(amount);
 String _invoice(int id) => 'INV-${id.toString().padLeft(6, '0')}';
 
 class SaleConfirmationPage extends StatefulWidget {
-  const SaleConfirmationPage({super.key, required this.draftId});
+  const SaleConfirmationPage({
+    super.key,
+    required this.draftId,
+    this.offlineCheckout,
+  });
   final int draftId;
+  final StockSyncCheckout? offlineCheckout;
   @override
   State<SaleConfirmationPage> createState() => _SaleConfirmationPageState();
 }
@@ -94,7 +100,17 @@ class _SaleConfirmationPageState extends State<SaleConfirmationPage>
     try {
       final db = AppDatabase.instance;
       final d = await db.getSaleDraft(widget.draftId);
-      final a = await db.getMoneyAccounts(branchId: d['branch_id'] as int);
+      final allAccounts = await db.getMoneyAccounts(
+        branchId: d['branch_id'] as int,
+      );
+      final pilot = widget.offlineCheckout;
+      final a = pilot == null
+          ? allAccounts
+          : allAccounts
+                .where(
+                  (account) => pilot.cashAccounts.containsKey(account['id']),
+                )
+                .toList();
       final c = await db.getContacts(kind: 'customer', activeOnly: true);
       final r = await db.getSaleRecovery(key);
       Map<String, Object?>? p;
@@ -424,6 +440,7 @@ class _SaleConfirmationPageState extends State<SaleConfirmationPage>
       await writes;
       final saleId = await AppDatabase.instance.confirmSaleDraft(
         draftId: widget.draftId,
+        offlineCheckout: widget.offlineCheckout,
         revision: revision!,
         paymentDate: _date(paymentDate),
         customerIdOverride: customerId,

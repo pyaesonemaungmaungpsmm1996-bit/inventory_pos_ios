@@ -1,4 +1,5 @@
 import 'live_sale_sync.dart';
+import 'stock_sync_checkout.dart';
 
 import 'purchase_zero_cost.dart';
 import 'backup_change_tracker.dart';
@@ -1231,6 +1232,7 @@ class AppDatabase {
     if (table == null || id <= 0) throw ArgumentError('Unknown voucher');
     final db = await database;
     await db.transaction((txn) async {
+      if (kind == 'sale') await StockSyncCheckout.requireLocalVoucher(txn, id);
       final found = await txn.query(table, where: 'id=?', whereArgs: [id]);
       if (found.isEmpty) throw StateError('Voucher no longer exists');
       final before = found.single;
@@ -4131,6 +4133,7 @@ class AppDatabase {
     required List<Map<String, int>> refunds,
     Map<int, String> trackedReturns = const {},
   }) async {
+    await StockSyncCheckout.requireLocalVoucher(txn, saleId);
     final day = DateTime.tryParse(returnDate);
     if (day == null ||
         returnDate.length != 10 ||
@@ -4465,6 +4468,7 @@ class AppDatabase {
   }
 
   Future<void> _voidSaleInvoice(Transaction txn, int id, String clean) async {
+    await StockSyncCheckout.requireLocalVoucher(txn, id);
     final liveSaleOrigin = LiveSaleSync.origin;
     final rows = await txn.query(
       'sale_invoices',
@@ -4704,6 +4708,7 @@ class AppDatabase {
     required int saleId,
     required int draftId,
   }) async {
+    await StockSyncCheckout.requireLocalVoucher(txn, saleId);
     final invoices = await txn.query(
       'sale_invoices',
       where: "id = ? AND status = 'posted'",
@@ -5130,6 +5135,7 @@ class AppDatabase {
         linkedReturnEdits =
         const {},
     Map<int, int> linkedExchangeEdits = const {},
+    StockSyncCheckout? offlineCheckout,
   }) async {
     final date = DateTime.tryParse(paymentDate);
     if (date == null ||
@@ -5181,6 +5187,9 @@ class AppDatabase {
       final d = rows.single;
       final branchId = d['branch_id'] as int;
       final sourceId = d['correction_source_sale_id'] as int?;
+      if (offlineCheckout != null && sourceId != null) {
+        throw StateError('Sync checkout requires a new voucher.');
+      }
       if (linkedResolutions.isNotEmpty) {
         if (sourceId == null) {
           throw StateError('Linked corrections require an existing invoice.');
@@ -5572,15 +5581,25 @@ class AppDatabase {
         where: 'recovery_key = ?',
         whereArgs: ['draft:$draftId'],
       );
-      await LiveSaleSync.record(
-        txn,
-        origin: liveSaleOrigin,
-        draftId: source?['draft_id'] as int? ?? draftId,
-        saleId: saleId,
-      );
+      if (offlineCheckout != null) {
+        await offlineCheckout.stage(
+          txn,
+          saleId: saleId,
+          invoice: invoiceValues,
+          items: items,
+          payments: payments,
+        );
+      } else {
+        await LiveSaleSync.record(
+          txn,
+          origin: liveSaleOrigin,
+          draftId: source?['draft_id'] as int? ?? draftId,
+          saleId: saleId,
+        );
+      }
       return saleId;
     });
-    LiveSaleSync.wake();
+    if (offlineCheckout == null) LiveSaleSync.wake();
     return result;
   }
 

@@ -7,7 +7,9 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'app_database.dart';
 import 'app_language.dart';
+import 'sale_confirmation_page.dart';
 import 'stock_sync.dart';
+import 'stock_sync_checkout.dart';
 
 class StockSyncPreviewEntry extends StatefulWidget {
   const StockSyncPreviewEntry({super.key});
@@ -131,6 +133,7 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
   String? _branch;
   String? _error;
   bool _busy = false;
+  int _pendingSales = 0;
   bool _pendingAdmin = false;
   StreamSubscription<int>? _updates;
   Timer? _poll;
@@ -211,9 +214,16 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
     final branch = branches.any((row) => row['id'] == _branch)
         ? _branch
         : branches.firstOrNull?['id'] as String?;
+    if (branch != _branch) {
+      _snapshot = null;
+      _pendingSales = 0;
+    }
     _branch = branch;
-    _report = null;
-    _snapshot = null;
+    if (changed) {
+      _report = null;
+      _snapshot = null;
+      _pendingSales = 0;
+    }
     _pendingAdmin =
         selection != null &&
         await _storage.read(key: _adminKey(selection)) != null;
@@ -250,14 +260,21 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
       secret: device['secret']!,
     );
     if (!approved) return;
+    final db = await AppDatabase.instance.database;
+    final store = OfflineStockStore(shop: selection, device: device['id']!);
+    await OfflineStockStore.ensureTables(db);
+    _pendingSales = await store.pendingCount(db);
+    await OfflineStockUploader(
+      store: store,
+      api: widget.api,
+      secret: device['secret']!,
+    ).flush(db);
     final snapshot = await widget.api.snapshot(
       shop: selection,
       device: device['id']!,
       secret: device['secret']!,
     );
-    final db = await AppDatabase.instance.database;
-    final store = OfflineStockStore(shop: selection, device: device['id']!);
-    await OfflineStockStore.ensureTables(db);
+    _pendingSales = 0;
     await store.applySnapshot(
       db,
       rows(snapshot['products']),
@@ -272,6 +289,137 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
     }
     snapshot['products'] = products;
     _snapshot = snapshot;
+  }
+
+  Map<int, String> _mapCodes(
+    List<Map<String, Object?>> local,
+    List<Map<String, dynamic>> remote,
+    String localField,
+    String remoteField,
+  ) {
+    return {
+      for (final row in local)
+        if (row[localField] != null &&
+            local.where((item) => item[localField] == row[localField]).length ==
+                1 &&
+            remote
+                    .where((item) => item[remoteField] == row[localField])
+                    .length ==
+                1)
+          row['id'] as int:
+              remote.singleWhere(
+                    (item) => item[remoteField] == row[localField],
+                  )['id']
+                  as String,
+    };
+  }
+
+  Future<void> _openOfflineDraft() async {
+    final shop = _shop;
+    final branch = _branch;
+    final snapshot = _snapshot;
+    if (shop == null ||
+        branch == null ||
+        snapshot == null ||
+        snapshot['branch_id'] != branch ||
+        _busy) {
+      return;
+    }
+    final branches = rows(_selected?['branches']);
+    final branchCode = branches.singleWhere(
+      (row) => row['id'] == branch,
+    )['code'];
+    try {
+      final app = AppDatabase.instance;
+      final local = (await app.getBranches())
+          .where((item) => item['code'] == branchCode)
+          .toList();
+      if (local.length != 1) {
+        throw StateError(
+          t(
+            'Create a local branch with the same branch code.',
+            'တူညီတဲ့ ဆိုင်ခွဲကုဒ်နဲ့ local ဆိုင်ခွဲဖန်တီးပါ။',
+          ),
+        );
+      }
+      final localBranchId = local.single['id'] as int;
+      final device = await _identity(shop, branch);
+      if (device == null) return;
+      final drafts = await app.getSaleDrafts(branchId: localBranchId);
+      final products = await app.getProducts(branchId: localBranchId);
+      final accounts = (await app.getMoneyAccounts(branchId: localBranchId))
+          .where((item) => item['type'] == 'cash')
+          .toList();
+      if (!mounted || shop != _shop || branch != _branch) return;
+      if (drafts.isEmpty) {
+        throw StateError(
+          t(
+            'Save a regular sale draft for this local branch first.',
+            'ဒီ local ဆိုင်ခွဲအတွက် ပုံမှန်အရောင်း Draft ကို အရင်သိမ်းပါ။',
+          ),
+        );
+      }
+      final checkout = StockSyncCheckout(
+        store: OfflineStockStore(shop: shop, device: device['id']!),
+        localBranchId: localBranchId,
+        products: _mapCodes(
+          products,
+          rows(snapshot['products']),
+          'item_code',
+          'code',
+        ),
+        cashAccounts: _mapCodes(
+          accounts,
+          rows(snapshot['accounts'])
+              .where((row) => row['kind'] == 'cash')
+              .toList(),
+          'name',
+          'name',
+        ),
+      );
+      final draft = await showDialog<int>(
+        context: context,
+        builder: (dialog) => SimpleDialog(
+          title: Text(
+            t(
+              'Open a draft for offline checkout',
+              'Offline အရောင်းအတွက် Draft ဖွင့်ရန်',
+            ),
+          ),
+          children: [
+            for (final row in drafts)
+              SimpleDialogOption(
+                onPressed: () => Navigator.pop(dialog, row['id'] as int),
+                child: Text(
+                  'Draft #${row['id']} · ${row['invoice_date']} · ${row['total']} MMK',
+                ),
+              ),
+          ],
+        ),
+      );
+      if (!mounted || draft == null || shop != _shop || branch != _branch) {
+        return;
+      }
+      final id = await Navigator.of(context).push(
+        MaterialPageRoute<int>(
+          builder: (_) =>
+              SaleConfirmationPage(draftId: draft, offlineCheckout: checkout),
+        ),
+      );
+      if (!mounted || id == null) return;
+      final db = await app.database;
+      final waiting = await checkout.store.pendingCount(db);
+      if (!mounted) return;
+      setState(() => _pendingSales = waiting);
+      unawaited(_run(_refresh));
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => ConfirmedSaleDetailPage(saleId: id),
+        ),
+      );
+    } catch (error) {
+      if (mounted) setState(() => _error = error.toString());
+    }
   }
 
   Future<List<String>?> _ask(String title, List<String> labels) async {
@@ -718,6 +866,9 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
                   : (value) => _run(() async {
                       await _updates?.cancel();
                       _updates = null;
+                      _snapshot = null;
+                      _report = null;
+                      _pendingSales = 0;
                       _shop = value;
                       _branch = null;
                       await _refresh();
@@ -737,6 +888,8 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
               onChanged: _busy
                   ? null
                   : (value) => _run(() async {
+                      _snapshot = null;
+                      _pendingSales = 0;
                       _branch = value;
                       await _refresh();
                     }),
@@ -747,6 +900,23 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
                 child: Text(t('Enroll this device', 'ဤစက်ကို စာရင်းသွင်းရန်')),
               ),
           ],
+          if (_snapshot != null &&
+              const [
+                'owner',
+                'manager',
+                'cashier',
+              ].contains(_selected?['role']))
+            OutlinedButton(
+              onPressed: _busy ? null : _openOfflineDraft,
+              child: Text(
+                t('Offline checkout test', 'Offline အရောင်း စမ်းသပ်ရန်'),
+              ),
+            ),
+          if (_pendingSales > 0)
+            Text(
+              '${t('Sales waiting to sync', 'Sync ပို့ရန်ကျန်သော အရောင်း')}: $_pendingSales',
+            ),
+
           if (_snapshot != null)
             for (final stock in rows(_snapshot!['products']))
               ListTile(
