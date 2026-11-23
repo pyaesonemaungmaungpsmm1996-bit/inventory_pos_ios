@@ -142,6 +142,18 @@ class SharedPosSession {
 
   Future<void> retry() => _exclusive(_sendPending);
 
+  Future<void> voidVoucher(String voucher, String reason) =>
+      _exclusive(() async {
+        if (await hasPending()) {
+          throw StateError('Retry the pending voucher first.');
+        }
+        final clean = reason.trim();
+        if (clean.isEmpty || clean.length > 300) {
+          throw ArgumentError('Enter a void reason.');
+        }
+        await _stage({'kind': 'void', 'voucher': voucher, 'reason': clean});
+      });
+
   Future<void> settle(String voucher, String account, int amount) =>
       _exclusive(() async {
         if (await hasPending()) {
@@ -174,7 +186,19 @@ class SharedPosSession {
     final pending = jsonDecode(saved) as Map;
     final command = Map<String, Object?>.from(pending['command'] as Map);
     try {
-      if (command['kind'] == 'settlement') {
+      if (command['kind'] == 'void') {
+        await connection.client.rpc(
+          'tp_stock_sync_void_voucher',
+          params: {
+            'shop': connection.shop,
+            'device': connection.device,
+            'secret': connection.secret,
+            'operation': pending['operation'],
+            'voucher': command['voucher'],
+            'reason': command['reason'],
+          },
+        );
+      } else if (command['kind'] == 'settlement') {
         await connection.client.rpc(
           'tp_stock_sync_settle_voucher',
           params: {

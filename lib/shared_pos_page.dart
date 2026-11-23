@@ -434,6 +434,39 @@ class _SharedPosPageState extends State<SharedPosPage> {
     );
   }
 
+  Future<void> _voidVoucher(Map voucher) async {
+    var reason = '';
+    final confirmed = await showDialog<String>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, update) => AlertDialog(
+          title: const Text('Void this voucher?'),
+          content: TextField(
+            maxLength: 300,
+            decoration: const InputDecoration(labelText: 'Void reason'),
+            onChanged: (value) => update(() => reason = value.trim()),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: reason.isEmpty
+                  ? null
+                  : () => Navigator.pop(context, reason),
+              child: const Text('Void voucher'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || confirmed == null) return;
+    await _run(
+      () => widget.session.voidVoucher(voucher['id'] as String, confirmed),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final kind = widget.kind;
@@ -491,8 +524,10 @@ class _SharedPosPageState extends State<SharedPosPage> {
           for (final row in visibleVouchers)
             ExpansionTile(
               title: Text('${row['number'] ?? row['occurred_at']}'),
-              subtitle: row['archived'] == true
-                  ? Text('${row['invoice_date']} · ${row['status']}')
+              subtitle: row['status'] == 'void'
+                  ? const Text('Voided')
+                  : row['archived'] == true
+                  ? Text('${row['invoice_date']}')
                   : null,
               trailing: Text(_money(row['total'])),
               children: [
@@ -510,6 +545,18 @@ class _SharedPosPageState extends State<SharedPosPage> {
                 ),
                 if (row['counterparty'] case final String name)
                   ListTile(title: Text(name)),
+                if (row['void_reason'] case final String reason)
+                  ListTile(
+                    title: const Text('Void reason'),
+                    subtitle: Text(reason),
+                  ),
+                if (row['can_void'] == true)
+                  OutlinedButton(
+                    onPressed: _busy || _pending
+                        ? null
+                        : () => _voidVoucher(row),
+                    child: const Text('Void voucher'),
+                  ),
                 if (row['archived'] != true && (row['due'] as int) > 0)
                   OutlinedButton(
                     onPressed: _busy || _pending ? null : () => _settle(row),
