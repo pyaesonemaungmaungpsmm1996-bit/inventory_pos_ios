@@ -73,6 +73,19 @@ class ProductTracking {
     }
   }
 
+  static Future<bool> canEnableSerial(DatabaseExecutor db, int id) async {
+    final rows = await db.rawQuery(
+      '''SELECT 1 FROM products p
+      WHERE p.id = ? AND p.tracking = 'none'
+        AND NOT EXISTS (SELECT 1 FROM branch_stocks s
+                        WHERE s.product_id = p.id AND s.stock <> 0)
+        AND NOT EXISTS (SELECT 1 FROM stock_movements m WHERE m.product_id = p.id)
+        AND NOT EXISTS (SELECT 1 FROM stock_lots l WHERE l.product_id = p.id)''',
+      [id],
+    );
+    return rows.isNotEmpty;
+  }
+
   static Future<void> validatePurchasePolicy(
     DatabaseExecutor db,
     int id,
@@ -83,7 +96,13 @@ class ProductTracking {
       where: 'id=?',
       whereArgs: [id],
     )).single;
-    if (item['tracking'] != null && item['tracking'] != p['tracking'] ||
+    final enableSerial =
+        item['enable_serial_on_existing'] == true &&
+        item['tracking'] == 'serial' &&
+        await canEnableSerial(db, id);
+    if (!enableSerial &&
+            item['tracking'] != null &&
+            item['tracking'] != p['tracking'] ||
         item['color'] != null && item['color'] != p['color'] ||
         item['size'] != null && item['size'] != p['size']) {
       throw StateError(
@@ -95,8 +114,16 @@ class ProductTracking {
         (days is! int ||
             days < 0 ||
             days > 36500 ||
-            p['tracking'] == 'none' && days > 0)) {
+            !enableSerial && p['tracking'] == 'none' && days > 0)) {
       throw ArgumentError('Check tracking mode and warranty days');
+    }
+    if (enableSerial) {
+      await db.update(
+        'products',
+        {'tracking': 'serial'},
+        where: 'id = ?',
+        whereArgs: [id],
+      );
     }
   }
 

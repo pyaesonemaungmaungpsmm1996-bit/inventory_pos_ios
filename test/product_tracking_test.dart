@@ -17,6 +17,8 @@ void main(){
    'CREATE TABLE sale_draft_items(id INTEGER PRIMARY KEY)',
    'CREATE TABLE sale_items(id INTEGER PRIMARY KEY,sale_id INTEGER,product_id INTEGER)',
    'CREATE TABLE purchase_items(id INTEGER PRIMARY KEY)',
+   'CREATE TABLE branch_stocks(product_id INTEGER,stock INTEGER)',
+   'CREATE TABLE stock_movements(product_id INTEGER)',
    "CREATE TABLE sale_returns(id INTEGER PRIMARY KEY,status TEXT,branch_id INTEGER)",
   ]){await db.execute(ddl);}
   legacySchema=await SqliteBackup.schema(db);
@@ -41,6 +43,27 @@ void main(){
   expect((await db.query('stock_lots')).single['available'],1);
   await expectLater(db.transaction((t)async{await ProductTracking.sell(t,1,1,1,'[{"lot_id":1,"qty":1}]',1,'2026-11-11');throw StateError('Payment failed');}),throwsStateError);
   expect((await db.query('stock_lots')).single['available'],1);expect(await db.query('sale_lot_allocations'),isEmpty);
+ });
+ test('first serial purchase keeps the original product and rejects prior history', () async {
+  await db.insert('products', {'id': 2, 'name': 'Laptop', 'category_id': 1});
+  await db.insert('products', {'id': 3, 'name': 'Used laptop', 'category_id': 1});
+  await db.insert('stock_movements', {'product_id': 3});
+  final item = {
+    'tracking': 'serial',
+    'enable_serial_on_existing': true,
+    'qty': 1,
+    'lots': [{'qty': 1, 'serial': 'LAPTOP-1'}],
+  };
+  await db.transaction((txn) async {
+    await ProductTracking.validatePurchasePolicy(txn, 2, item);
+    await ProductTracking.receive(txn, 2, 1, 1, item);
+  });
+  expect((await db.query('stock_lots')).single['product_id'], 2);
+  expect(await db.query('products'), hasLength(3));
+  await expectLater(
+    db.transaction((txn) => ProductTracking.validatePurchasePolicy(txn, 3, item)),
+    throwsStateError,
+  );
  });
  test('unique identity, exact warranty, no double sale, return identity and reversal',()async{
   await receive();await expectLater(receive(),throwsStateError);

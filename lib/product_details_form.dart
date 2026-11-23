@@ -46,6 +46,9 @@ Future<Map<String, Object?>?> purchaseProductDetails(
       ? 'Category unavailable'
       : '${categoryRows.single['name']}';
   final brands = (await BrandStore.list(db, categoryId)).toList();
+  final canEnableSerial =
+      product != null &&
+      await ProductTracking.canEnableSerial(db, product['id'] as int);
   if (!context.mounted) return null;
   final base = <String, Object?>{
     ...?product,
@@ -166,11 +169,17 @@ Future<Map<String, Object?>?> purchaseProductDetails(
                   });
                 }
               }
+              final variantChanged =
+                  product != null &&
+                  (color.text.trim() != '${product['color'] ?? ''}' ||
+                      size.text.trim() != '${product['size'] ?? ''}');
+              final enableSerial =
+                  canEnableSerial && mode == 'serial' && !variantChanged;
               final separate =
                   product != null &&
-                  (mode != '${product['tracking'] ?? 'none'}' ||
-                      color.text.trim() != '${product['color'] ?? ''}' ||
-                      size.text.trim() != '${product['size'] ?? ''}');
+                  (variantChanged ||
+                      !enableSerial &&
+                          mode != '${product['tracking'] ?? 'none'}');
               if (separate) {
                 final yes = await showDialog<bool>(
                   context: ctx,
@@ -207,6 +216,7 @@ Future<Map<String, Object?>?> purchaseProductDetails(
               Navigator.pop(dialog, <String, Object?>{
                 ...submittedItem,
                 'create_separate_sku': separate,
+                'enable_serial_on_existing': enableSerial,
                 'brand_id': brand,
                 'color': color.text.trim(),
                 'size': size.text.trim(),
@@ -527,8 +537,8 @@ Future<Map<String, Object?>?> purchaseProductDetails(
                       ),
                     Text(
                       _t(
-                        'Brand can be updated on an existing item. Changing its tracking mode, Color or Size creates a separate item code for this incoming purchase; old stock and invoices stay with the original item.',
-                        'Brand ကို ပစ္စည်းဟောင်းတွင် ပြင်နိုင်ပါသည်။ Tracking၊ အရောင် သို့မဟုတ် ဆိုဒ် ပြောင်းလျှင် ဤအဝယ်အတွက် ကုဒ်အသစ်ဖြင့် သီးခြားပစ္စည်း ဖန်တီးပါမည်။ လက်ကျန်နှင့် ဘောင်ချာအဟောင်းများ မူရင်းပစ္စည်းတွင် ဆက်ရှိပါမည်။',
+                        'The first serial-tracked purchase can keep the item code if the item has no stock or movement history and Color and Size stay the same. Other tracking or variant changes use a separate item code.',
+                        'လက်ကျန်နဲ့ အဝင်အထွက်မှတ်တမ်း မရှိသေးဘဲ အရောင်နဲ့ ဆိုဒ် တူနေရင် ပထမဆုံး serial ပါတဲ့ အဝယ်မှာ မူလ item code ကို ဆက်သုံးနိုင်ပါတယ်။ တခြား Tracking၊ အရောင် သို့မဟုတ် ဆိုဒ် ပြောင်းလဲမှုအတွက် item code သီးခြား သုံးရပါမယ်။',
                       ),
                     ),
                   ],
