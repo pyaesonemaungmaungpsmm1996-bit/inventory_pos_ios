@@ -128,6 +128,7 @@ class SharedPosOpeningImport {
             'paid',
             'balance_due',
             'currency_code',
+            kind == 'sale' ? 'customer_name' : 'supplier_name',
             if (kind == 'sale') 'branch_code_snapshot',
           ],
           where: 'branch_id = ?',
@@ -149,10 +150,32 @@ class SharedPosOpeningImport {
             'total': row['total'],
             'paid': row['paid'],
             'due': row['balance_due'],
+            'counterparty':
+                row[kind == 'sale' ? 'customer_name' : 'supplier_name'],
             'lines': linesByVoucher[row['id']] ?? const [],
           });
         }
       }
+      final expenses = await txn.query(
+        'expenses',
+        columns: ['id', 'expense_date', 'category', 'note', 'status', 'amount'],
+        where: 'branch_id = ?',
+        whereArgs: [branchId],
+        orderBy: 'id',
+      );
+      history.addAll([
+        for (final row in expenses)
+          {
+            'kind': 'expense',
+            'number': 'EXP-${row['id']}',
+            'invoice_date': row['expense_date'],
+            'status': row['status'],
+            'total': row['amount'],
+            'paid': row['amount'],
+            'due': 0,
+            'note': row['note'] == '' ? row['category'] : row['note'],
+          },
+      ]);
       return {
         'branch_code': branchCode,
         'currency': 'MMK',

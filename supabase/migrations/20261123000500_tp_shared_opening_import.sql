@@ -124,7 +124,7 @@ begin
   if exists (
     select 1 from jsonb_to_recordset(document->'history')
       v(kind text, number text, invoice_date date, status text, total bigint, paid bigint, due bigint)
-    where kind is null or kind not in ('sale', 'purchase')
+    where kind is null or kind not in ('sale', 'purchase', 'expense')
       or number is null or btrim(number) = '' or invoice_date is null
       or status is null or status not in ('posted', 'void')
       or total is null or total < 0 or paid is null or paid not between 0 and total

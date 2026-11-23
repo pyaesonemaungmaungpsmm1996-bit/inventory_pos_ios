@@ -87,7 +87,8 @@ begin
       case when event.id is null then entry.value else entry.value || jsonb_build_object(
         'paid', (entry.value->>'paid')::bigint + payments.amount,
         'due', (entry.value->>'due')::bigint - payments.amount,
-        'counterparty', event.payload->>'counterparty'
+        'counterparty', event.payload->>'counterparty',
+        'note', event.payload->>'note'
       ) end order by entry.position), '[]'::jsonb)
     from jsonb_array_elements(result->'vouchers') with ordinality as entry(value,position)
     left join tp_inventory_sync.events event

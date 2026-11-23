@@ -24,23 +24,43 @@ class SharedPosSession {
   String get _pendingKey =>
       'shared-pos:${connection.shop}:${connection.device}:pending';
 
+  Map<String, String> get _identity => {
+    'shop': connection.shop,
+    'device': connection.device,
+    'secret': connection.secret,
+  };
+
+  Future<Map<String, dynamic>> dashboard() async {
+    final yangon = DateTime.now().toUtc().add(
+      const Duration(hours: 6, minutes: 30),
+    );
+    final result = await connection.client.rpc(
+      'tp_stock_sync_dashboard',
+      params: {..._identity, 'day': yangon.toIso8601String().substring(0, 10)},
+    );
+    return Map<String, dynamic>.from(result as Map);
+  }
+
+  Future<List<Map>> openBalances(String kind) async {
+    final result = await connection.client.rpc(
+      'tp_stock_sync_open_balances',
+      params: {..._identity, 'voucher_kind': kind},
+    );
+    return (result as List).cast<Map>();
+  }
+
   Future<Map<String, dynamic>> load() async {
     final now = DateTime.now().toUtc();
-    final identity = {
-      'shop': connection.shop,
-      'device': connection.device,
-      'secret': connection.secret,
-    };
     final results = await Future.wait([
       connection.client.rpc(
         'tp_stock_sync_branch_view',
         params: {
-          ...identity,
+          ..._identity,
           'from_time': now.subtract(const Duration(days: 31)).toIso8601String(),
           'until_time': now.add(const Duration(minutes: 5)).toIso8601String(),
         },
       ),
-      connection.client.rpc('tp_stock_sync_branch_serials', params: identity),
+      connection.client.rpc('tp_stock_sync_branch_serials', params: _identity),
     ]);
     return {
       ...Map<String, dynamic>.from(results[0] as Map),
@@ -131,6 +151,29 @@ class SharedPosSession {
       'target_account': account,
     });
   });
+
+  Future<void> expense(String account, int amount, String note) =>
+      _exclusive(() async {
+        if (await hasPending()) {
+          throw StateError('Retry the pending transaction first.');
+        }
+        final description = note.trim();
+        if (amount <= 0 ||
+            amount > 9999999999999 ||
+            description.isEmpty ||
+            description.length > 300) {
+          throw ArgumentError('Enter an expense amount and description.');
+        }
+        await _stage({
+          'kind': 'expense',
+          'amount_minor': amount,
+          'note': description,
+          'occurred_at': DateTime.now().toUtc().toIso8601String(),
+          'payments': [
+            {'account_id': account, 'amount_minor': amount},
+          ],
+        });
+      });
 
   Future<void> _stage(Map<String, Object?> command) async {
     await _storage.write(

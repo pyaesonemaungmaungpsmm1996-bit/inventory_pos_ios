@@ -13,6 +13,10 @@ enum SharedPosPageKind {
   purchases,
   stock,
   accounts,
+  customerBalances,
+  supplierBalances,
+  expense,
+  expenses,
 }
 
 class SharedPosPage extends StatefulWidget {
@@ -35,12 +39,18 @@ class _SharedPosPageState extends State<SharedPosPage> {
   final _payments = <String, int>{};
   String? _selectedSerial;
   Map<String, dynamic>? _view;
+  Map<String, dynamic>? _dashboard;
+  List<Map> _openBalances = [];
+  bool _thisMonth = false;
   String? _product, _account, _message;
   bool _busy = false, _pending = false;
   Timer? _timer;
 
   bool get _sale => widget.kind == SharedPosPageKind.sale;
   bool get _entry => _sale || widget.kind == SharedPosPageKind.purchase;
+  bool get _balancePage =>
+      widget.kind == SharedPosPageKind.customerBalances ||
+      widget.kind == SharedPosPageKind.supplierBalances;
 
   List<Map> _rows(String key) => (_view?[key] as List? ?? []).cast<Map>();
 
@@ -74,7 +84,23 @@ class _SharedPosPageState extends State<SharedPosPage> {
     try {
       if (action != null) await action();
       final view = await widget.session.load();
-      if (mounted) setState(() => _view = view);
+      final dashboard = widget.kind == SharedPosPageKind.dashboard
+          ? await widget.session.dashboard()
+          : null;
+      final balances = _balancePage
+          ? await widget.session.openBalances(
+              widget.kind == SharedPosPageKind.customerBalances
+                  ? 'sale'
+                  : 'purchase',
+            )
+          : <Map>[];
+      if (mounted) {
+        setState(() {
+          _view = view;
+          _dashboard = dashboard;
+          _openBalances = balances;
+        });
+      }
     } catch (error) {
       if (mounted) setState(() => _message = error.toString());
     } finally {
@@ -467,6 +493,74 @@ class _SharedPosPageState extends State<SharedPosPage> {
     );
   }
 
+  Future<void> _addExpense() async {
+    String? account;
+    var amount = 0;
+    var note = '';
+    final expense =
+        await showDialog<({String account, int amount, String note})>(
+          context: context,
+          builder: (context) => StatefulBuilder(
+            builder: (context, update) => AlertDialog(
+              title: const Text('Add expense'),
+              content: SingleChildScrollView(
+                child: Column(
+                  children: [
+                    DropdownButtonFormField<String>(
+                      decoration: const InputDecoration(
+                        labelText: 'Payment account',
+                      ),
+                      items: [
+                        for (final row in _rows('accounts'))
+                          DropdownMenuItem(
+                            value: row['id'] as String,
+                            child: Text('${row['name']}'),
+                          ),
+                      ],
+                      onChanged: (value) => update(() => account = value),
+                    ),
+                    TextField(
+                      decoration: const InputDecoration(labelText: 'Amount'),
+                      keyboardType: TextInputType.number,
+                      onChanged: (value) =>
+                          update(() => amount = int.tryParse(value) ?? 0),
+                    ),
+                    TextField(
+                      decoration: const InputDecoration(
+                        labelText: 'Description',
+                      ),
+                      maxLength: 300,
+                      onChanged: (value) => update(() => note = value.trim()),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: account == null || amount <= 0 || note.isEmpty
+                      ? null
+                      : () => Navigator.pop(context, (
+                          account: account!,
+                          amount: amount,
+                          note: note,
+                        )),
+                  child: const Text('Save expense'),
+                ),
+              ],
+            ),
+          ),
+        );
+    if (!mounted || expense == null) return;
+    await _run(
+      () =>
+          widget.session.expense(expense.account, expense.amount, expense.note),
+    );
+  }
+
   int _remainingReturn(Map voucher, Map line) {
     final returned = (voucher['returns'] as List? ?? []).cast<Map>();
     return (line['qty'] as int) -
@@ -590,11 +684,13 @@ class _SharedPosPageState extends State<SharedPosPage> {
     final kind = widget.kind;
     final accounts = _rows('accounts');
     final vouchers = _rows('vouchers');
-    final visibleVouchers = vouchers.where(
-      (row) => kind == SharedPosPageKind.sales
-          ? row['kind'] == 'sale'
-          : row['kind'] == 'purchase',
-    );
+    final visibleVouchers = _balancePage
+        ? _openBalances
+        : vouchers.where(
+            (row) => kind == SharedPosPageKind.sales
+                ? row['kind'] == 'sale'
+                : row['kind'] == 'purchase',
+          );
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -613,18 +709,48 @@ class _SharedPosPageState extends State<SharedPosPage> {
             child: const Text('Retry pending transaction'),
           ),
         if (_view != null && _entry) _approve(),
-        if (_view != null && kind == SharedPosPageKind.dashboard)
+        if (_view != null && kind == SharedPosPageKind.expense)
+          FilledButton(
+            onPressed: _busy || _pending ? null : _addExpense,
+            child: const Text('Add expense'),
+          ),
+        if (kind == SharedPosPageKind.expense ||
+            kind == SharedPosPageKind.expenses)
+          for (final row in vouchers.where((row) => row['kind'] == 'expense'))
+            ListTile(
+              title: Text('${row['note'] ?? 'Expense'}'),
+              subtitle: Text('${row['occurred_at']}'),
+              trailing: Text(_money(row['total'])),
+            ),
+        if (_dashboard case final dashboard?) ...[
+          SegmentedButton<bool>(
+            segments: const [
+              ButtonSegment(value: false, label: Text('Today')),
+              ButtonSegment(value: true, label: Text('This month')),
+            ],
+            selected: {_thisMonth},
+            onSelectionChanged: (value) =>
+                setState(() => _thisMonth = value.single),
+          ),
           ListTile(
-            title: const Text('Current account balance'),
+            title: const Text('Sales after refunds'),
+            trailing: Text(
+              _money(dashboard[_thisMonth ? 'sales_month' : 'sales_today']),
+            ),
+          ),
+          ListTile(
+            title: const Text('Expenses'),
             trailing: Text(
               _money(
-                accounts.fold<int>(
-                  0,
-                  (sum, row) => sum + (row['balance'] as int),
-                ),
+                dashboard[_thisMonth ? 'expenses_month' : 'expenses_today'],
               ),
             ),
           ),
+          ListTile(
+            title: const Text('Current account balance'),
+            trailing: Text(_money(dashboard['balance'])),
+          ),
+        ],
         if (kind == SharedPosPageKind.stock)
           for (final row in _rows('stock'))
             ListTile(
@@ -637,7 +763,24 @@ class _SharedPosPageState extends State<SharedPosPage> {
               title: Text('${row['name']}'),
               trailing: Text(_money(row['balance'])),
             ),
-        if (kind == SharedPosPageKind.sales ||
+        if (_balancePage && _view != null)
+          ListTile(
+            title: Text(
+              kind == SharedPosPageKind.customerBalances
+                  ? 'Customer balances due'
+                  : 'Supplier balances due',
+            ),
+            trailing: Text(
+              _money(
+                _openBalances.fold<int>(
+                  0,
+                  (sum, row) => sum + (row['due'] as int),
+                ),
+              ),
+            ),
+          ),
+        if (_balancePage ||
+            kind == SharedPosPageKind.sales ||
             kind == SharedPosPageKind.purchases)
           for (final row in visibleVouchers)
             ExpansionTile(
@@ -655,7 +798,8 @@ class _SharedPosPageState extends State<SharedPosPage> {
                     subtitle: Text(
                       '${line['qty']} × ${_money(line['unit_price'])}',
                     ),
-                    trailing: row['can_return'] == true &&
+                    trailing:
+                        row['can_return'] == true &&
                             _remainingReturn(row, line) > 0
                         ? TextButton(
                             onPressed: _busy || _pending

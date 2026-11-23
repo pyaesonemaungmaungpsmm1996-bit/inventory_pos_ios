@@ -370,6 +370,10 @@ class _HomePageState extends State<HomePage> {
       SaleInvoiceHistoryPage() => SharedPosPageKind.sales,
       PurchaseHistoryPage() => SharedPosPageKind.purchases,
       MoneyAccountsPage() => SharedPosPageKind.accounts,
+      CustomerLedgerPage() => SharedPosPageKind.customerBalances,
+      SupplierLedgerPage() => SharedPosPageKind.supplierBalances,
+      ExpensesPage(:final historyOnly) =>
+        historyOnly ? SharedPosPageKind.expenses : SharedPosPageKind.expense,
       _ => null,
     };
     await Navigator.of(context).push<void>(
