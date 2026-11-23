@@ -12,7 +12,9 @@ declare
   phone_device uuid := gen_random_uuid();
   secret text := repeat('a',64);
   product uuid;
+  accessory uuid;
   cash uuid;
+  wire uuid;
   sale_id uuid := gen_random_uuid();
   command jsonb;
   desktop_view jsonb;
@@ -28,29 +30,38 @@ begin
   product := public.tp_stock_sync_admin(shop,gen_random_uuid(),'{"action":"product","code":"DE0001","name":"Laptop","sale_price_minor":150}');
   if has_serials then perform public.tp_stock_sync_enable_serial(shop,product); end if;
   cash := public.tp_stock_sync_admin(shop,gen_random_uuid(),jsonb_build_object('action','account','branch_id',branch,'kind','cash','name','Cash'));
+  wire := public.tp_stock_sync_admin(shop,gen_random_uuid(),jsonb_build_object('action','account','branch_id',branch,'kind','bank','name','Wire'));
+  accessory := public.tp_stock_sync_admin(shop,gen_random_uuid(),'{"action":"product","code":"ZZ001","name":"Cable","sale_price_minor":30}');
   perform public.tp_stock_sync_post(shop,windows_device,secret,gen_random_uuid(),
     jsonb_build_object('kind','deposit','amount_minor',1000,'target_account',cash));
   perform public.tp_stock_sync_post(shop,windows_device,secret,gen_random_uuid(),
     jsonb_build_object('kind','purchase','lines',jsonb_build_array(jsonb_build_object('product_id',product,'quantity',3,'unit_minor',100)
-      || case when has_serials then '{"serials":["SN1","SN2","SN3"]}'::jsonb else '{}'::jsonb end),
-      'payments',jsonb_build_array(jsonb_build_object('account_id',cash,'amount_minor',300))));
+      || case when has_serials then '{"serials":["SN1","SN2","SN3"]}'::jsonb else '{}'::jsonb end,
+      jsonb_build_object('product_id',accessory,'quantity',1,'unit_minor',20)),
+      'payments',jsonb_build_array(jsonb_build_object('account_id',cash,'amount_minor',320))));
   phone_view := public.tp_stock_sync_branch_view(shop,phone_device,secret,start_time,end_time);
   if phone_view#>>'{stock,0,available_online}' is distinct from '3'
-    or phone_view#>>'{accounts,0,balance}' is distinct from '700'
+    or phone_view#>>'{accounts,0,balance}' is distinct from '680'
     or phone_view#>>'{vouchers,0,kind}' is distinct from 'purchase' then
     raise exception 'Windows purchase was not visible on iPhone';
   end if;
   if has_serials and public.tp_stock_sync_branch_serials(shop,phone_device,secret)->product::text is distinct from '["SN1","SN2","SN3"]'::jsonb then
     raise exception 'The phone did not see the received serials';
   end if;
-  command := jsonb_build_object('kind','sale','lines',jsonb_build_array(jsonb_build_object('product_id',product,'quantity',1,'unit_minor',150)
-    || case when has_serials then '{"serials":["sn1"]}'::jsonb else '{}'::jsonb end),
-    'payments',jsonb_build_array(jsonb_build_object('account_id',cash,'amount_minor',150)));
+  command := jsonb_build_object('kind','sale','discount_minor',10,'lines',
+    jsonb_build_array(jsonb_build_object('product_id',product,'quantity',1,'unit_minor',150)
+      || case when has_serials then '{"serials":["sn1"]}'::jsonb else '{}'::jsonb end,
+      jsonb_build_object('product_id',accessory,'quantity',1,'unit_minor',30)),
+    'payments',jsonb_build_array(jsonb_build_object('account_id',cash,'amount_minor',150),
+      jsonb_build_object('account_id',wire,'amount_minor',20)));
   perform public.tp_stock_sync_post(shop,phone_device,secret,sale_id,command);
   perform public.tp_stock_sync_post(shop,phone_device,secret,sale_id,command);
   if has_serials then
     begin
-      perform public.tp_stock_sync_post(shop,windows_device,secret,gen_random_uuid(),command);
+      perform public.tp_stock_sync_post(shop,windows_device,secret,gen_random_uuid(),
+        jsonb_build_object('kind','sale','lines',jsonb_build_array(jsonb_build_object(
+          'product_id',product,'quantity',1,'unit_minor',150,'serials','["SN1"]'::jsonb)),
+          'payments',jsonb_build_array(jsonb_build_object('account_id',cash,'amount_minor',150))));
       raise exception 'Duplicate serial sale unexpectedly posted' using errcode = 'XX000';
     exception when raise_exception then null;
     end;
@@ -62,7 +73,9 @@ begin
   phone_view := public.tp_stock_sync_branch_view(shop,phone_device,secret,start_time,end_time);
   if desktop_view is distinct from phone_view
     or desktop_view#>>'{stock,0,on_hand}' is distinct from '2'
-    or desktop_view#>>'{accounts,0,balance}' is distinct from '850'
+    or desktop_view#>>'{stock,1,on_hand}' is distinct from '0'
+    or desktop_view#>>'{accounts,0,balance}' is distinct from '830'
+    or desktop_view#>>'{accounts,1,balance}' is distinct from '20'
     or jsonb_array_length(desktop_view->'vouchers') <> 2 then
     raise exception 'iPhone sale did not produce a single shared result';
   end if;

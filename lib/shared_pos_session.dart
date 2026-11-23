@@ -6,6 +6,14 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'branch_records_sync.dart';
 import 'stock_sync.dart';
 
+typedef SharedPosLine = ({
+  String product,
+  String label,
+  int quantity,
+  int unitPrice,
+  List<String>? serials,
+});
+
 class SharedPosSession {
   SharedPosSession(this.connection);
   static SharedPosSession? current;
@@ -45,34 +53,56 @@ class SharedPosSession {
 
   Future<void> post({
     required String kind,
-    required String product,
-    required String account,
-    required int quantity,
-    required int unitPrice,
-    List<String>? serials,
+    required List<SharedPosLine> lines,
+    required Map<String, int> payments,
+    int discount = 0,
   }) => _exclusive(() async {
     if (await hasPending()) {
       throw StateError('Retry the pending voucher first.');
     }
     if (!const ['sale', 'purchase'].contains(kind) ||
-        quantity <= 0 ||
-        unitPrice <= 0 ||
-        quantity * unitPrice > 9999999999999) {
-      throw ArgumentError('Enter a valid quantity and price.');
+        lines.isEmpty ||
+        lines.length > 100 ||
+        lines.map((line) => line.product).toSet().length != lines.length ||
+        lines.any(
+          (line) =>
+              line.quantity <= 0 ||
+              line.quantity > 999999999 ||
+              line.unitPrice <= 0 ||
+              line.unitPrice > 9999999999999 ~/ line.quantity,
+        ) ||
+        payments.length > 20 ||
+        payments.values.any((amount) => amount <= 0)) {
+      throw ArgumentError('Check voucher items and payment amounts.');
+    }
+    final subtotal = lines.fold<int>(
+      0,
+      (total, line) => total + line.quantity * line.unitPrice,
+    );
+    if (subtotal > 9999999999999 ||
+        discount < 0 ||
+        discount >= subtotal ||
+        (kind == 'purchase' && discount != 0) ||
+        payments.values.fold<int>(0, (total, amount) => total + amount) !=
+            subtotal - discount) {
+      throw ArgumentError('Payment total must match the voucher total.');
     }
     final command = {
       'kind': kind,
       'occurred_at': DateTime.now().toUtc().toIso8601String(),
+      'discount_minor': discount,
       'lines': [
-        {
-          'product_id': product,
-          'quantity': quantity,
-          'unit_minor': unitPrice,
-          'serials': ?serials,
-        },
+        for (final line in lines)
+          {
+            'product_id': line.product,
+            'quantity': line.quantity,
+            'unit_minor': line.unitPrice,
+            'serials': ?line.serials,
+          },
       ],
       'payments': [
-        {'account_id': account, 'amount_minor': quantity * unitPrice},
+        for (final payment in payments.entries)
+          {'account_id': payment.key, 'amount_minor': payment.value},
       ],
     };
     await _stage(command);

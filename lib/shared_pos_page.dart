@@ -28,6 +28,10 @@ class _SharedPosPageState extends State<SharedPosPage> {
   final _quantity = TextEditingController(text: '1');
   final _price = TextEditingController();
   final _serialInput = TextEditingController();
+  final _paymentAmount = TextEditingController();
+  final _discount = TextEditingController();
+  final _lines = <SharedPosLine>[];
+  final _payments = <String, int>{};
   String? _selectedSerial;
   Map<String, dynamic>? _view;
   String? _product, _account, _message;
@@ -54,6 +58,8 @@ class _SharedPosPageState extends State<SharedPosPage> {
     _quantity.dispose();
     _price.dispose();
     _serialInput.dispose();
+    _paymentAmount.dispose();
+    _discount.dispose();
     super.dispose();
   }
 
@@ -85,11 +91,37 @@ class _SharedPosPageState extends State<SharedPosPage> {
     decimalPlaces: 0,
   );
 
+  void _resetLine() {
+    _quantity.text = '1';
+    _product = null;
+    _price.clear();
+    _serialInput.clear();
+    _selectedSerial = null;
+  }
+
+  void _resetVoucher() {
+    _lines.clear();
+    _payments.clear();
+    _paymentAmount.clear();
+    _discount.clear();
+    _account = null;
+    _resetLine();
+  }
+
   Widget _approve() {
     final products = _rows('stock');
-    final accounts = _rows('accounts')
-        .where((row) => row['kind'] == 'cash')
-        .toList();
+    final accounts = _rows('accounts');
+    final subtotal = _lines.fold<int>(
+      0,
+      (total, line) => total + line.quantity * line.unitPrice,
+    );
+    final discount = _discount.text.isEmpty ? 0 : int.tryParse(_discount.text);
+    final total = subtotal - (discount ?? 0);
+    final paid = _payments.values.fold<int>(
+      0,
+      (total, amount) => total + amount,
+    );
+    final payment = int.tryParse(_paymentAmount.text) ?? 0;
     final quantity = int.tryParse(_quantity.text) ?? 0;
     final price = int.tryParse(_price.text) ?? 0;
     final availableSerials = (_view?['serials'] as Map?)?[_product] as List?;
@@ -105,6 +137,18 @@ class _SharedPosPageState extends State<SharedPosPage> {
               .toList();
     return Column(
       children: [
+        for (final line in _lines)
+          ListTile(
+            title: Text(line.label),
+            subtitle: Text('${line.quantity} × ${_money(line.unitPrice)}'),
+            trailing: IconButton(
+              tooltip: 'Remove item',
+              icon: const Icon(Icons.close),
+              onPressed: _busy || _pending
+                  ? null
+                  : () => setState(() => _lines.remove(line)),
+            ),
+          ),
         DropdownButtonFormField<String>(
           key: ValueKey(_product),
           initialValue: _product,
@@ -172,9 +216,62 @@ class _SharedPosPageState extends State<SharedPosPage> {
           decoration: const InputDecoration(labelText: 'Unit price'),
           onChanged: (_) => setState(() {}),
         ),
+        OutlinedButton(
+          onPressed:
+              _busy ||
+                  _pending ||
+                  _product == null ||
+                  _lines.length >= 100 ||
+                  quantity <= 0 ||
+                  quantity > 999999999 ||
+                  price <= 0 ||
+                  price > 9999999999999 ~/ quantity ||
+                  subtotal + quantity * price > 9999999999999 ||
+                  _lines.any((line) => line.product == _product) ||
+                  (serials != null && serials.length != quantity)
+              ? null
+              : () => setState(() {
+                  final productId = _product!;
+                  final row = products.firstWhere(
+                    (row) => row['id'] == productId,
+                  );
+                  _lines.add((
+                    product: productId,
+                    label: '${row['code']} · ${row['name']}',
+                    quantity: quantity,
+                    unitPrice: price,
+                    serials: serials,
+                  ));
+                  _resetLine();
+                }),
+          child: const Text('Add item'),
+        ),
+        if (_sale)
+          TextField(
+            controller: _discount,
+            keyboardType: TextInputType.number,
+            enabled: !_busy && !_pending,
+            decoration: const InputDecoration(labelText: 'Discount amount'),
+            onChanged: (_) => setState(() {}),
+          ),
+        for (final entry in _payments.entries)
+          ListTile(
+            title: Text(
+              '${accounts.firstWhere((row) => row['id'] == entry.key)['name']}',
+            ),
+            subtitle: Text(_money(entry.value)),
+            trailing: IconButton(
+              tooltip: 'Remove payment',
+              icon: const Icon(Icons.close),
+              onPressed: _busy || _pending
+                  ? null
+                  : () => setState(() => _payments.remove(entry.key)),
+            ),
+          ),
         DropdownButtonFormField<String>(
+          key: ValueKey('account:$_account'),
           initialValue: _account,
-          decoration: const InputDecoration(labelText: 'Cash account'),
+          decoration: const InputDecoration(labelText: 'Payment account'),
           items: [
             for (final row in accounts)
               DropdownMenuItem(
@@ -184,39 +281,66 @@ class _SharedPosPageState extends State<SharedPosPage> {
           ],
           onChanged: _busy || _pending
               ? null
-              : (id) => setState(() => _account = id),
+              : (id) => setState(() {
+                  _account = id;
+                  if (total > paid) _paymentAmount.text = '${total - paid}';
+                }),
         ),
-        Text(_money(quantity * price)),
+        TextField(
+          controller: _paymentAmount,
+          enabled: !_busy && !_pending,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(labelText: 'Payment amount'),
+          onChanged: (_) => setState(() {}),
+        ),
+        OutlinedButton(
+          onPressed:
+              _busy ||
+                  _pending ||
+                  _account == null ||
+                  _payments.length >= 20 ||
+                  _payments.containsKey(_account) ||
+                  payment <= 0 ||
+                  payment > total - paid
+              ? null
+              : () => setState(() {
+                  _payments[_account!] = payment;
+                  _account = null;
+                  _paymentAmount.clear();
+                }),
+          child: const Text('Add payment'),
+        ),
+        Text('Total: ${_money(total)} · Paid: ${_money(paid)}'),
         if (_pending)
           FilledButton(
-            onPressed: _busy ? null : () => _run(widget.session.retry),
+            onPressed: _busy
+                ? null
+                : () => _run(() async {
+                    await widget.session.retry();
+                    if (mounted) setState(_resetVoucher);
+                  }),
             child: const Text('Retry pending voucher'),
           )
         else
           FilledButton(
             onPressed:
                 _busy ||
-                    _product == null ||
-                    _account == null ||
-                    quantity <= 0 ||
-                    price <= 0 ||
-                    (serials != null && serials.length != quantity)
+                    _lines.isEmpty ||
+                    _product != null ||
+                    discount == null ||
+                    discount < 0 ||
+                    total <= 0 ||
+                    paid != total
                 ? null
                 : () => _run(() async {
                     await widget.session.post(
                       kind: _sale ? 'sale' : 'purchase',
-                      product: _product!,
-                      account: _account!,
-                      quantity: quantity,
-                      unitPrice: price,
-                      serials: serials,
+                      lines: _lines,
+                      payments: _payments,
+                      discount: discount,
                     );
                     if (mounted) {
-                      _quantity.text = '1';
-                      _product = null;
-                      _price.clear();
-                      _serialInput.clear();
-                      _selectedSerial = null;
+                      setState(_resetVoucher);
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(content: Text('Voucher saved')),
                       );
