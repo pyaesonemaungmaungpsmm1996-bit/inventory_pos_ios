@@ -7,11 +7,24 @@ workflows:
       flutter: 3.47.8
       xcode: latest
       cocoapods: default
+      groups:
+        - stock_sync_preview
     scripts:
       - name: Fetch dependencies
         script: flutter pub get --enforce-lockfile
       - name: Build iPhone release without signing
-        script: flutter build ios --release --no-codesign --no-pub --build-name=1.0.3 --build-number=4 --dart-define=TP_CLOUD_NETLIFY_TEST=true
+        script: |
+          set -euo pipefail
+          : "${TP_STOCK_SYNC_URL:?Set the Supabase URL in Codemagic}"
+          : "${TP_STOCK_SYNC_PUBLISHABLE_KEY:?Set the Supabase publishable key in Codemagic}"
+          [[ "$TP_STOCK_SYNC_URL" =~ ^https://[a-z0-9]+\.supabase\.co$ ]]
+          [[ "$TP_STOCK_SYNC_PUBLISHABLE_KEY" =~ ^sb_publishable_[A-Za-z0-9_-]+$ ]]
+          flutter build ios --release --no-codesign --no-pub \
+            --build-name=1.0.3 --build-number=4 \
+            --dart-define=TP_CLOUD_NETLIFY_TEST=true \
+            --dart-define=TP_STOCK_SYNC_PREVIEW=true \
+            "--dart-define=TP_STOCK_SYNC_URL=$TP_STOCK_SYNC_URL" \
+            "--dart-define=TP_STOCK_SYNC_PUBLISHABLE_KEY=$TP_STOCK_SYNC_PUBLISHABLE_KEY"
       - name: Package IPA
         script: |
           set -e

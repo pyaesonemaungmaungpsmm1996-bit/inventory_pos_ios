@@ -22,7 +22,7 @@ jobs:
             artifact: build/app/outputs/flutter-apk/app-release.apk
           - runner: macos-latest
             target: ios-unsigned
-            artifact: build/ios/iphoneos/Runner.app/
+            artifact: build/ios/ToePwarPOS.ipa
     runs-on: ${{ matrix.runner }}
     env:
       TP_STOCK_SYNC_URL: ${{ vars.TP_STOCK_SYNC_URL }}
@@ -67,7 +67,12 @@ jobs:
           case "$TP_BUILD_TARGET" in
             windows-portable) flutter build windows --release --no-pub "${defines[@]}" ;;
             android-test) flutter build apk --release --no-pub "${defines[@]}" ;;
-            ios-unsigned) flutter build ios --release --no-pub --no-codesign "${defines[@]}" ;;
+            ios-unsigned)
+              flutter build ios --release --no-pub --no-codesign "${defines[@]}"
+              mkdir -p build/ios/package/Payload
+              ditto build/ios/iphoneos/Runner.app build/ios/package/Payload/Runner.app
+              ditto -c -k --keepParent build/ios/package/Payload build/ios/ToePwarPOS.ipa
+              ;;
           esac
 
       - name: Verify Windows portable runtime
