@@ -56,6 +56,7 @@ class SharedPosSession {
     required List<SharedPosLine> lines,
     required Map<String, int> payments,
     int discount = 0,
+    String? counterparty,
   }) => _exclusive(() async {
     if (await hasPending()) {
       throw StateError('Retry the pending voucher first.');
@@ -79,18 +80,27 @@ class SharedPosSession {
       0,
       (total, line) => total + line.quantity * line.unitPrice,
     );
+    final total = subtotal - discount;
+    final paid = payments.values.fold<int>(
+      0,
+      (total, amount) => total + amount,
+    );
+    final name = counterparty?.trim() ?? '';
     if (subtotal > 9999999999999 ||
         discount < 0 ||
         discount >= subtotal ||
         (kind == 'purchase' && discount != 0) ||
-        payments.values.fold<int>(0, (total, amount) => total + amount) !=
-            subtotal - discount) {
-      throw ArgumentError('Payment total must match the voucher total.');
+        paid > total ||
+        (paid < total && (name.isEmpty || name.length > 150))) {
+      throw ArgumentError(
+        'Check payment total and the name on the balance due.',
+      );
     }
     final command = {
       'kind': kind,
       'occurred_at': DateTime.now().toUtc().toIso8601String(),
       'discount_minor': discount,
+      if (paid < total) 'counterparty': name,
       'lines': [
         for (final line in lines)
           {
@@ -132,6 +142,22 @@ class SharedPosSession {
 
   Future<void> retry() => _exclusive(_sendPending);
 
+  Future<void> settle(String voucher, String account, int amount) =>
+      _exclusive(() async {
+        if (await hasPending()) {
+          throw StateError('Retry the pending voucher first.');
+        }
+        if (amount <= 0 || amount > 9999999999999) {
+          throw ArgumentError('Enter a valid payment amount.');
+        }
+        await _stage({
+          'kind': 'settlement',
+          'voucher': voucher,
+          'account': account,
+          'amount_minor': amount,
+        });
+      });
+
   Future<void> _exclusive(Future<void> Function() action) async {
     if (_posting) throw StateError('A voucher is already being posted.');
     _posting = true;
@@ -146,14 +172,30 @@ class SharedPosSession {
     final saved = await _storage.read(key: _pendingKey);
     if (saved == null) return;
     final pending = jsonDecode(saved) as Map;
+    final command = Map<String, Object?>.from(pending['command'] as Map);
     try {
-      await StockSyncApi(connection.client).post(
-        shop: connection.shop,
-        device: connection.device,
-        secret: connection.secret,
-        operation: pending['operation'] as String,
-        command: Map<String, Object?>.from(pending['command'] as Map),
-      );
+      if (command['kind'] == 'settlement') {
+        await connection.client.rpc(
+          'tp_stock_sync_settle_voucher',
+          params: {
+            'shop': connection.shop,
+            'device': connection.device,
+            'secret': connection.secret,
+            'operation': pending['operation'],
+            'voucher': command['voucher'],
+            'account': command['account'],
+            'amount_minor': command['amount_minor'],
+          },
+        );
+      } else {
+        await StockSyncApi(connection.client).post(
+          shop: connection.shop,
+          device: connection.device,
+          secret: connection.secret,
+          operation: pending['operation'] as String,
+          command: command,
+        );
+      }
     } on PostgrestException catch (error) {
       if (const ['P0001', '23514', '22003'].contains(error.code)) {
         // PostgreSQL rolled this request back. Timeouts retain the original ID.

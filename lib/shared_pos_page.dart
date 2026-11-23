@@ -30,6 +30,7 @@ class _SharedPosPageState extends State<SharedPosPage> {
   final _serialInput = TextEditingController();
   final _paymentAmount = TextEditingController();
   final _discount = TextEditingController();
+  final _counterparty = TextEditingController();
   final _lines = <SharedPosLine>[];
   final _payments = <String, int>{};
   String? _selectedSerial;
@@ -60,6 +61,7 @@ class _SharedPosPageState extends State<SharedPosPage> {
     _serialInput.dispose();
     _paymentAmount.dispose();
     _discount.dispose();
+    _counterparty.dispose();
     super.dispose();
   }
 
@@ -77,7 +79,7 @@ class _SharedPosPageState extends State<SharedPosPage> {
       if (mounted) setState(() => _message = error.toString());
     } finally {
       try {
-        final pending = _entry && await widget.session.hasPending();
+        final pending = await widget.session.hasPending();
         if (mounted) setState(() => _pending = pending);
       } finally {
         if (mounted) setState(() => _busy = false);
@@ -104,6 +106,7 @@ class _SharedPosPageState extends State<SharedPosPage> {
     _payments.clear();
     _paymentAmount.clear();
     _discount.clear();
+    _counterparty.clear();
     _account = null;
     _resetLine();
   }
@@ -311,6 +314,18 @@ class _SharedPosPageState extends State<SharedPosPage> {
           child: const Text('Add payment'),
         ),
         Text('Total: ${_money(total)} · Paid: ${_money(paid)}'),
+        if (total > paid)
+          TextField(
+            controller: _counterparty,
+            enabled: !_busy && !_pending,
+            maxLength: 150,
+            decoration: InputDecoration(
+              labelText: _sale
+                  ? 'Customer name for credit sale'
+                  : 'Supplier name for credit purchase',
+            ),
+            onChanged: (_) => setState(() {}),
+          ),
         if (_pending)
           FilledButton(
             onPressed: _busy
@@ -330,7 +345,8 @@ class _SharedPosPageState extends State<SharedPosPage> {
                     discount == null ||
                     discount < 0 ||
                     total <= 0 ||
-                    paid != total
+                    paid > total ||
+                    (paid < total && _counterparty.text.trim().isEmpty)
                 ? null
                 : () => _run(() async {
                     await widget.session.post(
@@ -338,6 +354,7 @@ class _SharedPosPageState extends State<SharedPosPage> {
                       lines: _lines,
                       payments: _payments,
                       discount: discount,
+                      counterparty: _counterparty.text,
                     );
                     if (mounted) {
                       setState(_resetVoucher);
@@ -349,6 +366,71 @@ class _SharedPosPageState extends State<SharedPosPage> {
             child: Text(_sale ? 'Confirm sale' : 'Confirm purchase'),
           ),
       ],
+    );
+  }
+
+  Future<void> _settle(Map voucher) async {
+    final accounts = _rows('accounts');
+    final due = voucher['due'] as int;
+    var amount = due;
+    String? account;
+    final payment = await showDialog<({String account, int amount})>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, update) => AlertDialog(
+          title: Text(
+            voucher['kind'] == 'sale'
+                ? 'Receive payment'
+                : 'Record supplier payment',
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              DropdownButtonFormField<String>(
+                decoration: const InputDecoration(labelText: 'Payment account'),
+                items: [
+                  for (final row in accounts)
+                    DropdownMenuItem(
+                      value: row['id'] as String,
+                      child: Text('${row['name']}'),
+                    ),
+                ],
+                onChanged: (id) => update(() => account = id),
+              ),
+              TextFormField(
+                initialValue: '$due',
+                decoration: const InputDecoration(labelText: 'Amount'),
+                keyboardType: TextInputType.number,
+                onChanged: (value) =>
+                    update(() => amount = int.tryParse(value) ?? 0),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: account == null || amount <= 0 || amount > due
+                  ? null
+                  : () => Navigator.pop(context, (
+                      account: account!,
+                      amount: amount,
+                    )),
+              child: const Text('Record payment'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || payment == null) return;
+    await _run(
+      () => widget.session.settle(
+        voucher['id'] as String,
+        payment.account,
+        payment.amount,
+      ),
     );
   }
 
@@ -374,6 +456,11 @@ class _SharedPosPageState extends State<SharedPosPage> {
         ),
         if (_busy) const LinearProgressIndicator(),
         if (_message != null) SelectableText(_message!),
+        if (!_entry && _pending)
+          FilledButton(
+            onPressed: _busy ? null : () => _run(widget.session.retry),
+            child: const Text('Retry pending transaction'),
+          ),
         if (_view != null && _entry) _approve(),
         if (_view != null && kind == SharedPosPageKind.dashboard)
           ListTile(
@@ -421,6 +508,17 @@ class _SharedPosPageState extends State<SharedPosPage> {
                   title: Text('Paid: ${_money(row['paid'])}'),
                   subtitle: Text('Balance due: ${_money(row['due'])}'),
                 ),
+                if (row['counterparty'] case final String name)
+                  ListTile(title: Text(name)),
+                if (row['archived'] != true && (row['due'] as int) > 0)
+                  OutlinedButton(
+                    onPressed: _busy || _pending ? null : () => _settle(row),
+                    child: Text(
+                      row['kind'] == 'sale'
+                          ? 'Receive payment'
+                          : 'Record supplier payment',
+                    ),
+                  ),
               ],
             ),
       ],
