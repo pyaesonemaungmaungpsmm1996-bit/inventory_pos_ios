@@ -9,6 +9,11 @@ void main() {
   testWidgets('isolated sync preview has its own sign-in form', (tester) async {
     await tester.pumpWidget(const MaterialApp(home: StockSyncPreviewEntry()));
     expect(find.text('Stock sync test login'), findsOneWidget);
+    expect(find.text('Send email code'), findsOneWidget);
+    expect(find.text('Password'), findsNothing);
+    await tester.tap(find.text('Use password'));
+    await tester.pump();
+    expect(find.text('Password'), findsOneWidget);
     expect(find.text('Sign in to test project'), findsOneWidget);
   });
 
