@@ -18,6 +18,7 @@ class BranchRecordsSync {
   });
 
   static BranchRecordsSync? publisher;
+  static BranchRecordsSync? reader;
   final SupabaseClient client;
   final String shop, branchCode, device, secret;
   Timer? _timer;
@@ -115,6 +116,17 @@ class BranchRecordsSync {
 
       return <String, Object?>{
         'branch_code': branchCode,
+        'currency': (await txn.query(
+          'business_profile',
+          columns: ['currency_code', 'currency_digits'],
+          where: 'id = 1',
+        )).single,
+        'accounts': await txn.rawQuery(
+          '''SELECT a.name, a.type, COALESCE(SUM(e.amount), 0) AS balance
+          FROM money_accounts a LEFT JOIN money_entries e ON e.account_id = a.id
+          WHERE a.branch_id = ? GROUP BY a.id ORDER BY a.name COLLATE NOCASE, a.id''',
+          [id],
+        ),
         'stock': await txn.rawQuery(
           '''
           SELECT p.item_code, p.name, p.price, s.stock

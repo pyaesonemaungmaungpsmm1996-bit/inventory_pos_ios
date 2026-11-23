@@ -4,9 +4,37 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:inventory_pos/branch_records_sync.dart';
+import 'package:inventory_pos/money_accounts_page.dart';
+import 'package:inventory_pos/stock_balance_page.dart';
 import 'package:inventory_pos/stock_sync.dart';
 import 'package:inventory_pos/stock_sync_setup_page.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
+class _FixtureBranchReader extends BranchRecordsSync {
+  _FixtureBranchReader()
+    : super(
+        client: StockSyncApi.connect(
+          'https://stock-sync.example.test',
+          'sb_publishable_fixture',
+        ),
+        shop: 'shop',
+        branchCode: 'PZD',
+        device: 'phone',
+        secret: 'test',
+      );
+
+  @override
+  Future<Map<String, dynamic>?> read() async => {
+    'currency': {'currency_code': 'MMK', 'currency_digits': 0},
+    'stock': [
+      {'item_code': 'DE0001', 'name': 'Laptop', 'stock': 3},
+    ],
+    'accounts': [
+      {'name': 'Cash till', 'type': 'cash', 'balance': 700},
+    ],
+  };
+}
 
 void main() {
   sqfliteFfiInit();
@@ -19,6 +47,26 @@ void main() {
     await tester.pump();
     expect(find.text('Password'), findsOneWidget);
     expect(find.text('Sign in to test project'), findsOneWidget);
+  });
+
+  testWidgets('normal balance menus show the connected Windows branch', (
+    tester,
+  ) async {
+    final reader = (await tester.runAsync(() async => _FixtureBranchReader()))!;
+    BranchRecordsSync.reader = reader;
+    addTearDown(() async {
+      BranchRecordsSync.reader = null;
+      await reader.client.dispose();
+    });
+    await tester.pumpWidget(const MaterialApp(home: StockBalancePage()));
+    await tester.pumpAndSettle();
+    expect(find.text('DE0001'), findsOneWidget);
+    expect(find.text('3'), findsOneWidget);
+    await tester.pumpWidget(const MaterialApp(home: MoneyAccountsPage()));
+    await tester.pumpAndSettle();
+    expect(find.text('Cash till'), findsOneWidget);
+    expect(find.textContaining('700'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
   });
 
   test(

@@ -11,6 +11,8 @@ import 'app_datetime.dart';
 import 'app_currency.dart';
 import 'app_database.dart';
 import 'app_language.dart';
+import 'branch_records_sync.dart';
+import 'synced_branch_balance_page.dart';
 
 String _t(String en, String my) => AppLanguage.current.value == 'my' ? my : en;
 String _date(DateTime value) =>
@@ -41,7 +43,7 @@ class _MoneyAccountsPageState extends State<MoneyAccountsPage> {
   @override
   void initState() {
     super.initState();
-    load();
+    if (BranchRecordsSync.reader == null) load();
   }
 
   Future<void> load() async {
@@ -163,6 +165,9 @@ class _MoneyAccountsPageState extends State<MoneyAccountsPage> {
 
   @override
   Widget build(BuildContext context) {
+    if (BranchRecordsSync.reader case final reader?) {
+      return SyncedBranchBalancePage(reader: reader, accounts: true);
+    }
     final total = accounts.fold<int>(
       0,
       (sum, a) => sum + (a['balance'] as int),

@@ -7,6 +7,8 @@ import 'package:flutter/material.dart';
 import 'app_database.dart';
 import 'app_language.dart';
 import 'app_capabilities.dart';
+import 'branch_records_sync.dart';
+import 'synced_branch_balance_page.dart';
 part 'desktop_stock_balance.dart';
 
 class StockBalancePage extends StatefulWidget {
@@ -31,7 +33,7 @@ class _StockBalancePageState extends State<StockBalancePage> {
   void initState() {
     super.initState();
     branch = widget.initialBranchId ?? 0;
-    load();
+    if (BranchRecordsSync.reader == null) load();
   }
 
   Future<void> load() async {
@@ -106,6 +108,9 @@ class _StockBalancePageState extends State<StockBalancePage> {
   );
   @override
   Widget build(BuildContext context) {
+    if (BranchRecordsSync.reader case final reader?) {
+      return SyncedBranchBalancePage(reader: reader, accounts: false);
+    }
     final query = search.toLowerCase();
     final shown = rows
         .where(

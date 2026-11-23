@@ -40,7 +40,9 @@ class _StockSyncPreviewEntryState extends State<StockSyncPreviewEntry> {
     _password.dispose();
     _code.dispose();
     final client = _client;
-    if (client != null && BranchRecordsSync.publisher?.client != client) {
+    if (client != null &&
+        BranchRecordsSync.publisher?.client != client &&
+        BranchRecordsSync.reader?.client != client) {
       unawaited(client.dispose());
     }
     super.dispose();
@@ -100,7 +102,8 @@ class _StockSyncPreviewEntryState extends State<StockSyncPreviewEntry> {
               StockSyncSetupPage(api: StockSyncApi(client), userId: user.id),
         ),
       );
-      if (BranchRecordsSync.publisher?.client != client) {
+      if (BranchRecordsSync.publisher?.client != client &&
+          BranchRecordsSync.reader?.client != client) {
         await client.auth.signOut(scope: SignOutScope.local);
       }
     } catch (error) {
@@ -118,6 +121,44 @@ class _StockSyncPreviewEntryState extends State<StockSyncPreviewEntry> {
     body: ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        if (BranchRecordsSync.reader case final reader?)
+          ListTile(
+            title: Text(
+              t('Windows records connected', 'Windows စာရင်း ချိတ်ထားသည်'),
+            ),
+            subtitle: Text(reader.branchCode),
+            onTap: _busy
+                ? null
+                : () {
+                    final user = reader.client.auth.currentUser;
+                    if (user == null) return;
+                    Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => StockSyncSetupPage(
+                          api: StockSyncApi(reader.client),
+                          userId: user.id,
+                        ),
+                      ),
+                    );
+                  },
+            trailing: TextButton(
+              onPressed: _busy
+                  ? null
+                  : () async {
+                      setState(() => BranchRecordsSync.reader = null);
+                      try {
+                        await reader.client.auth.signOut(
+                          scope: SignOutScope.local,
+                        );
+                      } finally {
+                        if (_client != reader.client) {
+                          await reader.client.dispose();
+                        }
+                      }
+                    },
+              child: Text(t('Disconnect', 'ချိတ်ဆက်မှု ဖြုတ်ရန်')),
+            ),
+          ),
         if (BranchRecordsSync.publisher case final publisher?)
           ListTile(
             title: Text(
@@ -177,7 +218,10 @@ class _StockSyncPreviewEntryState extends State<StockSyncPreviewEntry> {
             child: Text(t('Send a new code', 'Code အသစ် ပို့ရန်')),
           ),
         FilledButton(
-          onPressed: _busy || BranchRecordsSync.publisher != null
+          onPressed:
+              _busy ||
+                  BranchRecordsSync.publisher != null ||
+                  BranchRecordsSync.reader != null
               ? null
               : _signIn,
           child: Text(
@@ -187,7 +231,10 @@ class _StockSyncPreviewEntryState extends State<StockSyncPreviewEntry> {
           ),
         ),
         TextButton(
-          onPressed: _busy || BranchRecordsSync.publisher != null
+          onPressed:
+              _busy ||
+                  BranchRecordsSync.publisher != null ||
+                  BranchRecordsSync.reader != null
               ? null
               : () {
                   setState(() {
@@ -1109,8 +1156,23 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
                 t('Sync Windows POS records', 'Windows POS စာရင်း ပို့ရန်'),
               ),
             ),
-          if (_snapshot != null && _owner && _branchRecords != null)
+          if (_snapshot != null && _owner && _branchRecords != null) ...[
+            if (!Platform.isWindows)
+              OutlinedButton(
+                onPressed: _busy
+                    ? null
+                    : () => _run(() async {
+                        BranchRecordsSync.reader = await _recordsClient();
+                      }),
+                child: Text(
+                  t(
+                    'Use Windows records in POS menus',
+                    'ပုံမှန် POS မီနူးတွင် Windows စာရင်းပြရန်',
+                  ),
+                ),
+              ),
             ..._recordSections(_branchRecords!),
+          ],
           if (_snapshot != null &&
               const [
                 'owner',
