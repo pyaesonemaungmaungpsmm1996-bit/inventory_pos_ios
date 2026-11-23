@@ -279,7 +279,10 @@ class _SharedPosPageState extends State<SharedPosPage> {
             kind == SharedPosPageKind.purchases)
           for (final row in visibleVouchers)
             ListTile(
-              title: Text('${row['occurred_at']}'),
+              title: Text('${row['number'] ?? row['occurred_at']}'),
+              subtitle: row['archived'] == true
+                  ? Text('${row['invoice_date']} · ${row['status']}')
+                  : null,
               trailing: Text(_money(row['total'])),
             ),
       ],

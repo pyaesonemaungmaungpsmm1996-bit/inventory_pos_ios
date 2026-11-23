@@ -9,6 +9,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart' as ffi;
 import 'package:inventory_pos/app_database.dart';
 import 'package:inventory_pos/stock_sync.dart';
 import 'package:inventory_pos/stock_sync_checkout.dart';
+import 'package:inventory_pos/shared_pos_opening_import.dart';
 import 'package:inventory_pos/account_transfer_repository.dart';
 import 'package:inventory_pos/subscription_runtime.dart';
 
@@ -82,6 +83,23 @@ void main(){
   expect(await balance(cash),cashBalance);
   await app.deleteVoucher(kind:'sale',id:sale);
   expect(await db.rawQuery('PRAGMA foreign_key_check'),isEmpty);
+ });
+ test('opening import reads current stock, money and voucher history from SQLite', () async {
+  final sale = await sell();
+  try {
+   final snapshot = await SharedPosOpeningImport.prepare('QA');
+   final catalog = (snapshot['products'] as List).cast<Map>();
+   final accounts = (snapshot['accounts'] as List).cast<Map>();
+   final history = (snapshot['history'] as List).cast<Map>();
+   expect(catalog.singleWhere((item) => item['name'] == 'Shirt')['quantity'], await stock());
+   expect(accounts.singleWhere((account) => account['name'] == 'Cash')['balance'], await balance(cash));
+   expect(history.single['kind'], 'sale');
+   expect(history.single['total'], 200);
+   expect(history.single['paid'], 200);
+   await expectLater(SharedPosOpeningImport.prepare('WRONG'), throwsStateError);
+  } finally {
+   await app.deleteVoucher(kind:'sale',id:sale);
+  }
  });
  test('approved offline checkout commits the existing invoice, cash, stock and one upload together',()async{
   final store=OfflineStockStore(shop:'checkout-shop',device:'checkout-device');

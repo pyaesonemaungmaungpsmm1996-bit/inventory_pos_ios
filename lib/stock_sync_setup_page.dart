@@ -11,6 +11,7 @@ import 'app_language.dart';
 import 'branch_records_sync.dart';
 import 'sale_confirmation_page.dart';
 import 'shared_pos_session.dart';
+import 'shared_pos_opening_import.dart';
 import 'stock_sync.dart';
 import 'stock_sync_checkout.dart';
 
@@ -881,6 +882,64 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
     });
   }
 
+  Future<void> _importOpeningFromWindows() async {
+    await _run(() async {
+      final connection = await _recordsClient();
+      if (connection == null) return;
+      final document = await SharedPosOpeningImport.prepare(
+        connection.branchCode,
+      );
+      if (!mounted) return;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text(
+            t(
+              'Import Windows opening records?',
+              'Windows အဖွင့်စာရင်း တင်မလား?',
+            ),
+          ),
+          content: Text(
+            '${connection.branchCode}\n'
+            '${t('Items', 'ပစ္စည်းများ')}: ${(document['products'] as List).length}\n'
+            '${t('Accounts', 'ငွေအကောင့်များ')}: ${(document['accounts'] as List).length}\n'
+            '${t('Archived vouchers', 'ဘောင်ချာမှတ်တမ်း')}: ${(document['history'] as List).length}\n\n'
+            '${t('Choose a cloud branch with no existing stock, cash accounts or transactions.', 'Stock၊ ငွေအကောင့်နဲ့ အဝင်အထွက် မရှိသေးတဲ့ cloud ဆိုင်ခွဲကို သုံးပါ။')}',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: Text(t('Cancel', 'ပယ်ဖျက်ရန်')),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: Text(t('Import', 'စာရင်းတင်ရန်')),
+            ),
+          ],
+        ),
+      );
+      if (!mounted || confirmed != true) return;
+      final imported = await SharedPosOpeningImport.upload(
+        connection,
+        document,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            imported
+                ? t('Opening records imported.', 'အဖွင့်စာရင်း တင်ပြီးပါပြီ။')
+                : t(
+                    'These opening records were already imported.',
+                    'ဒီအဖွင့်စာရင်း တင်ပြီးသားပါ။',
+                  ),
+          ),
+        ),
+      );
+      await _refresh();
+    });
+  }
+
   Future<void> _fundTestCash() async {
     final values = await _ask(t('Add test cash', 'စမ်းသပ်ငွေ ထည့်ရန်'), [
       t('Cash account name', 'ငွေအကောင့်နာမည်'),
@@ -1222,6 +1281,16 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
                   : () => _run(_publishWindowsRecords),
               child: Text(
                 t('Sync Windows POS records', 'Windows POS စာရင်း ပို့ရန်'),
+              ),
+            ),
+          if (_snapshot != null && _owner && Platform.isWindows)
+            OutlinedButton(
+              onPressed: _busy ? null : _importOpeningFromWindows,
+              child: Text(
+                t(
+                  'Import Windows opening records',
+                  'Windows အဖွင့်စာရင်း တင်ရန်',
+                ),
               ),
             ),
           if (_snapshot != null &&
