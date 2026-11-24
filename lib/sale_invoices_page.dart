@@ -1,3 +1,4 @@
+import 'shared_pos_session.dart';
 import 'sale_linked_review.dart';
 import 'split_payment_dialog.dart';
 import 'catalog_search.dart';
@@ -608,17 +609,26 @@ class _SaleInvoicesPageState extends State<SaleInvoicesPage> {
   );
 }
 
+Widget sharedSaleForm(SharedPosSession session) => _SaleDraftForm(
+  branches: [
+    {'id': 0, 'name': session.connection.branchCode, 'code': session.connection.branchCode},
+  ],
+  initialBranchId: 0,
+  sharedSession: session,
+);
 class _SaleDraftForm extends StatefulWidget {
   const _SaleDraftForm({
     required this.branches,
     required this.initialBranchId,
     this.draft,
     this.recovery,
+    this.sharedSession,
   });
   final List<Map<String, Object?>> branches;
   final int initialBranchId;
   final Map<String, Object?>? draft;
   final Map<String, Object?>? recovery;
+  final SharedPosSession? sharedSession;
   @override
   State<_SaleDraftForm> createState() => _SaleDraftFormState();
 }
@@ -659,6 +669,10 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
   final discountFocus = FocusNode(), rowsFocus = FocusNode();
   int selectedLine = 0;
   Map<int, Map<String, Object?>> desktopLots = {};
+  final _sharedProductIds = <String, int>{};
+  final _sharedAccountIds = <String, int>{};
+  final _sharedSerialIds = <(String, String), int>{};
+  Map<int, List<Map<String, Object?>>> _sharedLots = {};
   Timer? _timer;
   Future<void> _writes = Future<void>.value();
   bool _ready = false,
@@ -819,6 +833,10 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
 
   void _touch() {
     if (!_ready || _finalizing || !mounted) return;
+    if (widget.sharedSession != null) {
+      setState(() => _dirty = true);
+      return;
+    }
     _generation++;
     _dirty = true;
     _timer?.cancel();
@@ -855,7 +873,7 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
 
   Future<bool> _persistNow() async {
     _timer?.cancel();
-    if (!_ready || !_dirty || _finalizing) return true;
+    if (widget.sharedSession != null || !_ready || !_dirty || _finalizing) return true;
     final generation = _generation;
     final payload = jsonEncode(_snapshot());
     bool ok = false;
@@ -906,6 +924,15 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
     try {
       if (!_dirty) {
         await _pop();
+        return;
+      }
+      if (widget.sharedSession != null) {
+        final discard = await desktopAsk(
+          context,
+          _t('Leave this invoice?', 'ဘောင်ချာမှ ထွက်မလား?'),
+          _t('Discard this unposted sale?', 'မသိမ်းရသေးသော အရောင်းကို ပယ်ဖျက်မလား?'),
+        );
+        if (discard && mounted) await _pop();
         return;
       }
       final choice = await showDialog<String>(
@@ -988,6 +1015,13 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
         /* Validation remains in the posting flow. */
       }
     }
+    if (widget.sharedSession != null) {
+      return [
+        for (final lots in _sharedLots.values)
+          for (final lot in lots)
+            if (ids.contains(lot['id'])) lot,
+      ];
+    }
     final list = ids.toList(), result = <Map<String, Object?>>[];
     final database = await AppDatabase.instance.database;
     for (var i = 0; i < list.length; i += 200) {
@@ -1016,6 +1050,48 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
     }
     try {
       final db = AppDatabase.instance;
+      if (widget.sharedSession case final session?) {
+        final data = await session.load();
+        if (!mounted || request != ticket) return;
+        final serials = data['serials'] as Map;
+        final cloudProducts = <Map<String, Object?>>[];
+        final cloudLots = <int, List<Map<String, Object?>>>{};
+        for (final product in (data['stock'] as List).cast<Map>()) {
+          final cloudId = product['id'] as String;
+          final id = _sharedProductIds.putIfAbsent(cloudId, () => _sharedProductIds.length + 1);
+          cloudProducts.add({
+            'id': id, 'cloud_id': cloudId, 'name': product['name'],
+            'item_code': product['code'], 'barcode': product['code'],
+            'price': product['price'], 'stock': product['available_online'],
+            'tracking': serials.containsKey(cloudId) ? 'serial' : 'none',
+          });
+          cloudLots[id] = [
+            for (final serial in (serials[cloudId] as List? ?? const []).cast<String>())
+              {
+                'id': _sharedSerialIds.putIfAbsent((cloudId, serial), () => _sharedSerialIds.length + 1),
+                'serial': serial, 'available': 1,
+              },
+          ];
+        }
+        final accounts = [
+          for (final account in (data['accounts'] as List).cast<Map>())
+            <String, Object?>{
+              'id': _sharedAccountIds.putIfAbsent(account['id'] as String, () => _sharedAccountIds.length + 1),
+              'cloud_id': account['id'], 'name': account['name'],
+              'type': account['kind'], 'balance': account['balance'],
+            },
+        ];
+        setState(() {
+          products = cloudProducts;
+          _sharedLots = cloudLots;
+          desktopAccounts = accounts;
+          desktopAccountId ??= accounts.firstOrNull?['id'] as int?;
+          loading = false;
+          choicesReady = true;
+        });
+        _ready = true;
+        return;
+      }
       final p = (await db.getProducts(branchId: branchId))
           .map((r) => Map<String, Object?>.from(r))
           .toList();
@@ -1131,10 +1207,10 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
     );
     if (!mounted || value == null) return;
     try {
-      final product = await AppDatabase.instance.getProductByBarcode(
-        branchId: branchId,
-        barcode: value,
-      );
+      final product = widget.sharedSession == null
+          ? await AppDatabase.instance.getProductByBarcode(branchId: branchId, barcode: value)
+          : products.where((item) =>
+              item['barcode'].toString().toLowerCase() == value.trim().toLowerCase()).firstOrNull;
       if (!mounted) return;
       if (product == null) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1279,6 +1355,8 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
         price = p;
       },
       editingSaleId: widget.draft?['correction_source_sale_id'] as int?,
+      sharedProduct: widget.sharedSession == null ? null : selectedProduct,
+      sharedLots: widget.sharedSession == null ? null : _sharedLots[id],
     );
     if (tracking == null || !mounted) return;
     final row = <String, Object?>{
@@ -1361,7 +1439,7 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
     }
     if (_pendingLine != null ||
         lines.isEmpty ||
-        employeeId == null ||
+        (widget.sharedSession == null && employeeId == null) ||
         subtotal > 9000000000000) {
       setState(
         () => error = _t(
@@ -1377,8 +1455,63 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
       error = null;
     });
     try {
+      if (widget.sharedSession case final session?) {
+        final pending = await session.hasPending();
+        if (!mounted) return;
+        if (pending) {
+          final retry = await desktopAsk(
+            context,
+            _t('Retry pending transaction?', 'စောင့်နေသောစာရင်း ပြန်ပို့မလား?'),
+            _t('Retry the previously submitted transaction before creating another sale.', 'နောက်ထပ်အရောင်းမတင်မီ ယခင်ပို့ထားသောစာရင်းကို ပြန်ပို့ပါ။'),
+          );
+          if (!retry || !mounted) return;
+          await session.retry();
+          if (!mounted) return;
+          _dirty = false;
+          await _pop();
+          return;
+        }
+      }
       if (openPayment && !await desktopReview()) return;
       if (!mounted) return;
+      if (widget.sharedSession case final session?) {
+        if (!openPayment) {
+          throw StateError(_t('Use Confirm sale to save this shared invoice.', 'မျှဝေဘောင်ချာကို သိမ်းရန် Confirm sale ကိုနှိပ်ပါ။'));
+        }
+        final sharedLines = <SharedPosLine>[];
+        for (final line in lines) {
+          final product = products.singleWhere((p) => p['id'] == line['product_id']);
+          final id = product['id'] as int;
+          final allocations = jsonDecode(line['tracking_json'] as String? ?? '[]') as List;
+          sharedLines.add((
+            product: product['cloud_id'] as String,
+            label: product['name'] as String,
+            quantity: line['qty'] as int,
+            unitPrice: line['price'] as int,
+            serials: product['tracking'] == 'serial'
+                ? [
+                    for (final allocation in allocations.cast<Map>())
+                      _sharedLots[id]!.singleWhere((lot) => lot['id'] == allocation['lot_id'])['serial'] as String,
+                  ]
+                : null,
+          ));
+        }
+        await session.post(
+          kind: 'sale',
+          lines: sharedLines,
+          discount: discountAmount,
+          payments: {
+            for (final split in desktopPaymentSplits)
+              desktopAccounts.singleWhere((account) => account['id'] == split['account_id'])['cloud_id'] as String:
+                  split['amount']!,
+          },
+          counterparty: name.text,
+        );
+        if (!mounted) return;
+        _dirty = false;
+        await _pop();
+        return;
+      }
       int? contactId = customerId;
       bool createContact =
           (saveContact || (openPayment && desktopBalance > 0)) &&
@@ -1586,6 +1719,8 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
     if (lines.isEmpty || _pendingLine != null) return;
     final index = selectedLine.clamp(0, lines.length - 1);
     final row = Map<String, Object?>.from(lines[index]);
+    final id = row['product_id'] as int;
+    final selectedProduct = products.where((p) => p['id'] == id).firstOrNull;
     final tracking = await pickSaleLots(
       context,
       row['product_id'] as int,
@@ -1593,6 +1728,8 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
       row['qty'] as int,
       row['tracking_json'],
       editingSaleId: widget.draft?['correction_source_sale_id'] as int?,
+      sharedProduct: widget.sharedSession == null ? null : selectedProduct,
+      sharedLots: widget.sharedSession == null ? null : _sharedLots[id],
     );
     if (!mounted || tracking == null) return;
     row['tracking_json'] = tracking;
@@ -1646,7 +1783,9 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
     _finalizing = true;
     _timer?.cancel();
     await _writes;
-    await AppDatabase.instance.deleteSaleRecovery(recoveryKey);
+    if (widget.sharedSession == null) {
+      await AppDatabase.instance.deleteSaleRecovery(recoveryKey);
+    }
     _dirty = false;
     await _pop(_DraftResult(branchId, startNew: true));
   }
@@ -1658,7 +1797,7 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
       return;
     }
     try {
-      var product = await AppDatabase.instance.getProductByBarcode(
+      var product = widget.sharedSession != null ? null : await AppDatabase.instance.getProductByBarcode(
         branchId: branchId,
         barcode: input.trim(),
       );
@@ -1890,6 +2029,8 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
         line['qty'] as int,
         line['tracking_json'],
         editingSaleId: widget.draft?['correction_source_sale_id'] as int?,
+        sharedProduct: widget.sharedSession == null ? null : product,
+        sharedLots: widget.sharedSession == null ? null : _sharedLots[line['product_id']],
       );
       if (!mounted || picked == null) return false;
       final labels = await readDesktopLots([
@@ -2070,7 +2211,7 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
       enabled: enabled && choicesReady,
       onEscape: _leave,
       commands: {
-        DesktopCommand.saveDraft: () => save(),
+        if (widget.sharedSession == null) DesktopCommand.saveDraft: () => save(),
         DesktopCommand.newVoucher: desktopNewInvoice,
         DesktopCommand.barcode: AppCapabilities.windows
             ? () => desktopSearchFocus.requestFocus()
@@ -2281,7 +2422,7 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
                                 _touch();
                               }
                             : null,
-                        validator: (id) => id == null
+                        validator: (id) => widget.sharedSession == null && id == null
                             ? _t(
                                 'Select an active employee for this branch.',
                                 'ဤဆိုင်ခွဲ၏ အသုံးပြုဆဲဝန်ထမ်း ရွေးပါ။',
@@ -2481,7 +2622,7 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
                           ),
                         ),
                       const SizedBox(height: 16),
-                      OutlinedButton.icon(
+                      if (widget.sharedSession == null) OutlinedButton.icon(
                         onPressed: enabled && choicesReady
                             ? () => save()
                             : null,

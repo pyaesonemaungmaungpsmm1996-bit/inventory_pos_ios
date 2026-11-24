@@ -350,7 +350,7 @@ extension _ApprovedSaleForm on _SaleDraftFormState {
             tool(
               _t('Save Draft', 'မူကြမ်းသိမ်း'),
               Icons.save_outlined,
-              active ? () => save() : null,
+              active && widget.sharedSession == null ? () => save() : null,
             ),
             tool(
               _t('Find', 'ရှာရန်'),
@@ -573,7 +573,7 @@ extension _ApprovedSaleForm on _SaleDraftFormState {
                                 _touch();
                               }
                             : null,
-                        validator: (id) => id == null
+                        validator: (id) => widget.sharedSession == null && id == null
                             ? _t('Choose an employee.', 'ဝန်ထမ်းရွေးပါ')
                             : null,
                       ),

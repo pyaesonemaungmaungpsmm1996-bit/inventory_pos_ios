@@ -489,6 +489,9 @@ class _HomePageState extends State<HomePage> {
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
         builder: (context) {
+          if (session != null && sharedKind == SharedPosPageKind.sale) {
+            return sharedSaleForm(session);
+          }
           if (session != null && sharedKind == SharedPosPageKind.stock) {
             return page;
           }

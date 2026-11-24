@@ -589,11 +589,13 @@ Future<String?> pickSaleLots(
   int? saleItem,
   int? excludeReturn,
   int? editingSaleId,
+  Map<String, Object?>? sharedProduct,
+  List<Map<String, Object?>>? sharedLots,
   int? unitPrice,
   void Function(int quantity, int price)? onDetails,
 }) async {
-  final db = await AppDatabase.instance.database;
-  final p = (await db.query(
+  final db = sharedProduct == null ? await AppDatabase.instance.database : null;
+  final p = sharedProduct ?? (await db!.query(
     'products',
     where: 'id=?',
     whereArgs: [product],
@@ -605,25 +607,25 @@ Future<String?> pickSaleLots(
   ].where((f) => '${p[f] ?? ''}'.isNotEmpty).toList();
   if (!tracked && variants.isEmpty && onDetails == null) return '[]';
   final form = GlobalKey<FormState>();
-  final lots = !tracked
+  final lots = sharedLots ?? (!tracked
       ? <Map<String, Object?>>[]
       : editingSaleId != null
-      ? await db.rawQuery(
+      ? await db!.rawQuery(
           '''SELECT l.*, l.available + COALESCE((SELECT SUM(a.quantity) FROM sale_lot_allocations a JOIN sale_items i ON i.id=a.sale_item_id WHERE a.lot_id=l.id AND i.sale_id=?),0) AS available
           FROM stock_lots l WHERE l.product_id=? AND l.branch_id=? AND (l.expires_on IS NULL OR l.expires_on>=?) ORDER BY l.id''',
           [editingSaleId, product, branch, ProductTracking.today()],
         )
       : saleItem == null
-      ? await db.query(
+      ? await db!.query(
           'stock_lots',
           where: 'product_id=? AND branch_id=? AND available>0 AND (expires_on IS NULL OR expires_on>=?)',
           whereArgs: [product, branch, ProductTracking.today()],
           orderBy: 'expires_on IS NULL,expires_on,id',
         )
-      : await db.rawQuery(
+      : await db!.rawQuery(
           "SELECT l.*,a.quantity-COALESCE((SELECT SUM(x.quantity) FROM return_lot_allocations x JOIN sale_returns r ON r.id=x.return_id WHERE r.status='posted' AND r.id<>? AND x.sale_item_id=a.sale_item_id AND x.lot_id=l.id),0) AS available FROM sale_lot_allocations a JOIN stock_lots l ON l.id=a.lot_id WHERE a.sale_item_id=? ORDER BY l.id",
           [excludeReturn ?? -1, saleItem],
-        );
+        ));
   if (!context.mounted) return null;
   final previous = {
     for (final a in ProductTracking.decode(prior)) a['lot_id']: a['qty'],

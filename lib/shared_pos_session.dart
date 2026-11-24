@@ -111,7 +111,7 @@ class SharedPosSession {
         discount >= subtotal ||
         (kind == 'purchase' && discount != 0) ||
         paid > total ||
-        (paid < total && (name.isEmpty || name.length > 150))) {
+        (paid < total && name.isEmpty) || name.length > 150) {
       throw ArgumentError(
         'Check payment total and the name on the balance due.',
       );
@@ -120,7 +120,7 @@ class SharedPosSession {
       'kind': kind,
       'occurred_at': DateTime.now().toUtc().toIso8601String(),
       'discount_minor': discount,
-      if (paid < total) 'counterparty': name,
+      if (name.isNotEmpty) 'counterparty': name,
       'lines': [
         for (final line in lines)
           {
