@@ -25,6 +25,10 @@ import 'provider_connection.dart';
 import 'stock_balance_page.dart';
 import 'shared_pos_page.dart';
 import 'shared_pos_session.dart';
+import 'shared_pos_connection.dart';
+import 'online_account_service.dart';
+import 'stock_sync.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'dart:async';
 
@@ -206,11 +210,109 @@ class _HomePageState extends State<HomePage> {
   final dashboardKey = GlobalKey<DashboardPageState>();
   int? viewedBranch;
   bool openingSale = false;
+  StreamSubscription<AuthState>? _sharedAuth;
+  Timer? _sharedRetry;
+  String? _sharedUser;
+  bool _connecting = false;
+  bool _sharedRequired = true;
+  String? _syncStatus;
+  List<SharedBranch> _sharedBranches = [];
+  SharedBranch? _branch;
+
+  Future<void> _watchSharedAccount() async {
+    try {
+      await OnlineAccounts.initialize();
+      if (!mounted) return;
+      _sharedAuth = OnlineAccounts.client.auth.onAuthStateChange.listen(
+        (_) => _accountChanged(),
+        onError: (Object _) {},
+      );
+      _accountChanged();
+      _sharedRetry = Timer.periodic(const Duration(seconds: 15), (_) {
+        if (_sharedRequired && SharedPosSession.current == null) {
+          unawaited(_connectShared());
+        }
+      });
+    } catch (_) {
+      if (mounted) setState(() => _sharedRequired = false);
+    }
+  }
+
+  void _accountChanged() {
+    final user = OnlineAccounts.client.auth.currentUser?.id;
+    if (_sharedUser == user && (user != null || !_sharedRequired)) return;
+    setState(() {
+      _sharedUser = user;
+      _branch = null;
+      _sharedBranches = [];
+      _sharedRequired = user != null;
+      _syncStatus = null;
+      SharedPosSession.current = null;
+    });
+    unawaited(_connectShared());
+  }
+
+  Future<void> _connectShared() async {
+    final user = _sharedUser;
+    if (_connecting || user == null || !mounted) return;
+    setState(() => _connecting = true);
+    try {
+      final connector = SharedPosConnection(StockSyncApi(OnlineAccounts.client), user);
+      final branches = await connector.branches();
+      final preferences = SharedPreferencesAsync();
+      final saved = await preferences.getString('shared-pos-branch:$user');
+      if (!mounted || _sharedUser != user) return;
+      final branch = branches.where((item) => item.branch == (_branch?.branch ?? saved)).firstOrNull ??
+          (branches.length == 1 ? branches.single : null);
+      setState(() {
+        _sharedBranches = branches;
+        _sharedRequired = branches.isNotEmpty;
+        _branch = branch;
+        _syncStatus = null;
+      });
+      if (branch == null) return;
+      final session = await connector.connect(branch);
+      if (!mounted || _sharedUser != user) return;
+      setState(() {
+        SharedPosSession.current = session;
+        _syncStatus = session == null ? 'Waiting for device approval' : null;
+      });
+    } catch (_) {
+      if (mounted && _sharedUser == user) {
+        setState(() => _syncStatus = 'Unable to connect to shared POS. Retrying automatically.');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _connecting = false);
+        if (_sharedUser != user) unawaited(_connectShared());
+      }
+    }
+  }
+
+  Future<void> _selectSharedBranch(SharedBranch? branch) async {
+    final user = _sharedUser;
+    if (branch == null || user == null || _connecting) return;
+    setState(() {
+      _branch = branch;
+      SharedPosSession.current = null;
+    });
+    await _connectShared();
+    if (mounted && _sharedUser == user && _branch == branch) {
+      await SharedPreferencesAsync().setString('shared-pos-branch:$user', branch.branch);
+    }
+  }
+
+  Widget _sharedConnectionStatus() => Center(
+    child: Text(AppLanguage.text(_connecting
+        ? 'Connecting to shared POS…'
+        : _syncStatus ?? 'Choose your shop and branch on the Dashboard.')),
+  );
 
   @override
   void initState() {
     super.initState();
     ProviderConnection.start();
+    unawaited(_watchSharedAccount());
     if (AppCapabilities.windows) {
       desktopWorkspaceNavigation.onSelected = selectDesktopMenu;
       desktopWorkspaceNavigation.onSaleAction = openDesktopSaleMenu;
@@ -286,6 +388,8 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    unawaited(_sharedAuth?.cancel());
+    _sharedRetry?.cancel();
     if (AppCapabilities.windows) {
       desktopWorkspaceNavigation.onSelected = null;
       desktopWorkspaceNavigation.onSaleAction = null;
@@ -369,6 +473,7 @@ class _HomePageState extends State<HomePage> {
       PurchasePage() => SharedPosPageKind.purchase,
       SaleInvoiceHistoryPage() => SharedPosPageKind.sales,
       PurchaseHistoryPage() => SharedPosPageKind.purchases,
+      StockBalancePage() => SharedPosPageKind.stock,
       MoneyAccountsPage() => SharedPosPageKind.accounts,
       AccountTransferPage() => SharedPosPageKind.transfer,
       CustomerLedgerPage() => SharedPosPageKind.customerBalances,
@@ -383,6 +488,8 @@ class _HomePageState extends State<HomePage> {
           appBar: AppBar(title: Text(AppLanguage.text(title))),
           body: session != null && sharedKind != null
               ? SharedPosPage(session: session, kind: sharedKind)
+              : sharedKind != null && _sharedRequired
+              ? _sharedConnectionStatus()
               : page,
         ),
       ),
@@ -399,11 +506,7 @@ class _HomePageState extends State<HomePage> {
         await openPage('Purchase', PurchasePage(initialBranchId: branch));
         return;
       case 'stock':
-        await Navigator.of(context).push<void>(
-          MaterialPageRoute(
-            builder: (_) => StockBalancePage(initialBranchId: branch),
-          ),
-        );
+        await openPage('Balance Stock', StockBalancePage(initialBranchId: branch));
         return;
       case 'customers':
         await openPage('Customers', const ContactsPage(kind: 'customer'));
@@ -555,8 +658,31 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget buildDashboard() {
-    if (SharedPosSession.current case final session?) {
-      return SharedPosPage(session: session, kind: SharedPosPageKind.dashboard);
+    final session = SharedPosSession.current;
+    if (_sharedRequired || session != null) {
+      return Column(
+        children: [
+          if (_sharedBranches.length > 1)
+            DropdownButton<SharedBranch>(
+              value: _branch,
+              hint: Text(AppLanguage.text('Shop and branch')),
+              items: [
+                for (final branch in _sharedBranches)
+                  DropdownMenuItem(value: branch, child: Text(branch.label)),
+              ],
+              onChanged: _connecting ? null : _selectSharedBranch,
+            ),
+          Expanded(
+            child: session == null
+                ? _sharedConnectionStatus()
+                : SharedPosPage(
+                    key: ValueKey(session),
+                    session: session,
+                    kind: SharedPosPageKind.dashboard,
+                  ),
+          ),
+        ],
+      );
     }
     return DashboardPage(
       key: dashboardKey,
@@ -641,9 +767,7 @@ class _HomePageState extends State<HomePage> {
           'Balance Stock',
           Icons.fact_check_outlined,
           subtitle: 'Check stock by category, brand and branch',
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute<void>(builder: (_) => const StockBalancePage()),
-          ),
+          onTap: () => openPage('Balance Stock', const StockBalancePage()),
         ),
         menuTile(
           'Stock & Products',

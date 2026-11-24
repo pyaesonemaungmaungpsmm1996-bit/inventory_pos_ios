@@ -10,6 +10,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'online_account_service.dart';
 import 'stock_sync_setup_page.dart';
+import 'stock_sync.dart';
 import 'online_permissions_page.dart';
 
 /// Online account-management pilot. Deliberately separate from legacy POS data.
@@ -514,14 +515,17 @@ class _OnlineAccountsPageState extends State<OnlineAccountsPage> {
             onPressed: initialize,
             child: const Text('Retry connection'),
           ),
-        if (const bool.fromEnvironment('TP_STOCK_SYNC_PREVIEW'))
+        if (user != null)
           OutlinedButton(
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute<void>(
-                builder: (_) => const StockSyncPreviewEntry(),
+                builder: (_) => StockSyncSetupPage(
+                  api: StockSyncApi(OnlineAccounts.client),
+                  userId: user.id,
+                ),
               ),
             ),
-            child: Text(bt('Stock sync test', 'စက်ကြား လက်ကျန် စမ်းသပ်မှု')),
+            child: Text(bt('Shared POS setup', 'ဆိုင်ခွဲနှင့် စက် စီမံရန်')),
           ),
         if (ready && user == null) ...[
           const SizedBox(height: 12),

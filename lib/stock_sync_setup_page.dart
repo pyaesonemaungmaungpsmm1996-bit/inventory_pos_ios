@@ -11,6 +11,7 @@ import 'app_language.dart';
 import 'branch_records_sync.dart';
 import 'sale_confirmation_page.dart';
 import 'shared_pos_session.dart';
+import 'shared_pos_connection.dart';
 import 'shared_pos_opening_import.dart';
 import 'stock_sync.dart';
 import 'stock_sync_checkout.dart';
@@ -346,7 +347,6 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
   List<Map<String, dynamic>> _shops = [];
   Map<String, dynamic>? _report;
   Map<String, dynamic>? _snapshot;
-  Map<String, dynamic>? _branchRecords;
   String? _shop;
   String? _branch;
   String? _error;
@@ -392,42 +392,9 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
     );
   }
 
-  Future<void> _publishWindowsRecords() async {
-    final sync = await _recordsClient();
-    if (sync == null || BranchRecordsSync.publisher != null) return;
-    await sync.start();
-    BranchRecordsSync.publisher = sync;
-  }
 
-  Iterable<Widget> _recordSections(Map<String, dynamic> records) sync* {
-    yield Text(t('Synced Windows records', 'Windows မှ တင်ထားသော စာရင်းများ'));
-    yield Text('${records['updated_at']}');
-    for (final (key, label) in [
-      ('stock', t('Balance stock', 'ပစ္စည်းလက်ကျန်')),
-      ('sales', t('Sale history', 'အရောင်းမှတ်တမ်း')),
-      ('purchases', t('Purchase history', 'အဝယ်မှတ်တမ်း')),
-    ]) {
-      final items = rows(records[key]);
-      yield ExpansionTile(
-        title: Text('$label (${items.length})'),
-        children: [
-          for (final row in items)
-            ListTile(
-              title: Text(
-                key == 'stock'
-                    ? '${row['item_code']} · ${row['name']}'
-                    : '${row['number']} · ${row['invoice_date']}',
-              ),
-              subtitle: Text(
-                key == 'stock'
-                    ? '${t('Stock', 'လက်ကျန်')}: ${row['stock']}'
-                    : '${row['total']} ${row['currency_code']} · ${row['status']}',
-              ),
-            ),
-        ],
-      );
-    }
-  }
+
+
 
   @override
   void initState() {
@@ -490,14 +457,12 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
         : branches.firstOrNull?['id'] as String?;
     if (branch != _branch) {
       _snapshot = null;
-      _branchRecords = null;
       _pendingSales = 0;
     }
     _branch = branch;
     if (changed) {
       _report = null;
       _snapshot = null;
-      _branchRecords = null;
       _pendingSales = 0;
     }
     _pendingAdmin =
@@ -536,10 +501,7 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
       secret: device['secret']!,
     );
     if (!approved) return;
-    if (_owner && !Platform.isWindows) {
-      final records = await _recordsClient();
-      _branchRecords = await records?.read();
-    }
+
     final db = await AppDatabase.instance.database;
     final store = OfflineStockStore(shop: selection, device: device['id']!);
     await OfflineStockStore.ensureTables(db);
@@ -1244,7 +1206,7 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
     final branches = rows(_selected?['branches']);
     return Scaffold(
       appBar: AppBar(
-        title: Text(t('Stock sync test', 'စက်ကြား လက်ကျန် စမ်းသပ်မှု')),
+        title: Text(t('Shared POS setup', 'ဆိုင်ခွဲနှင့် စက် စီမံရန်')),
         actions: [
           IconButton(
             onPressed: _busy ? null : () => _run(_refresh),
@@ -1283,7 +1245,6 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
                       await _updates?.cancel();
                       _updates = null;
                       _snapshot = null;
-                      _branchRecords = null;
                       _report = null;
                       _pendingSales = 0;
                       _shop = value;
@@ -1306,7 +1267,6 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
                   ? null
                   : (value) => _run(() async {
                       _snapshot = null;
-                      _branchRecords = null;
                       _pendingSales = 0;
                       _branch = value;
                       await _refresh();
@@ -1320,15 +1280,6 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
           ],
           if (_snapshot != null && _owner && Platform.isWindows)
             OutlinedButton(
-              onPressed: _busy || BranchRecordsSync.publisher != null
-                  ? null
-                  : () => _run(_publishWindowsRecords),
-              child: Text(
-                t('Sync Windows POS records', 'Windows POS စာရင်း ပို့ရန်'),
-              ),
-            ),
-          if (_snapshot != null && _owner && Platform.isWindows)
-            OutlinedButton(
               onPressed: _busy ? null : _importOpeningFromWindows,
               child: Text(
                 t(
@@ -1337,48 +1288,6 @@ class _StockSyncSetupPageState extends State<StockSyncSetupPage> {
                 ),
               ),
             ),
-          if (_snapshot != null &&
-              _owner &&
-              SharedPosSession.current == null &&
-              BranchRecordsSync.reader == null &&
-              BranchRecordsSync.publisher == null)
-            OutlinedButton(
-              onPressed: _busy
-                  ? null
-                  : () => _run(() async {
-                      final connection = await _recordsClient();
-                      if (connection == null) return;
-                      final session = SharedPosSession(connection);
-                      await session.load();
-                      if (context.mounted) {
-                        SharedPosSession.current = session;
-                        Navigator.of(context).pop();
-                      }
-                    }),
-              child: Text(
-                t(
-                  'Open shared POS test mode',
-                  'မျှဝေထားသော POS စမ်းသပ်မုဒ် ဖွင့်ရန်',
-                ),
-              ),
-            ),
-          if (_snapshot != null && _owner && _branchRecords != null) ...[
-            if (!Platform.isWindows)
-              OutlinedButton(
-                onPressed: _busy
-                    ? null
-                    : () => _run(() async {
-                        BranchRecordsSync.reader = await _recordsClient();
-                      }),
-                child: Text(
-                  t(
-                    'Use Windows records in POS menus',
-                    'ပုံမှန် POS မီနူးတွင် Windows စာရင်းပြရန်',
-                  ),
-                ),
-              ),
-            ..._recordSections(_branchRecords!),
-          ],
           if (_snapshot != null &&
               const [
                 'owner',
