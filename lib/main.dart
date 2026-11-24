@@ -490,7 +490,8 @@ class _HomePageState extends State<HomePage> {
         sharedKind == SharedPosPageKind.expense ||
         sharedKind == SharedPosPageKind.expenses ||
         sharedKind == SharedPosPageKind.customerBalances ||
-        sharedKind == SharedPosPageKind.supplierBalances;
+        sharedKind == SharedPosPageKind.supplierBalances ||
+        sharedKind == SharedPosPageKind.accounts;
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
         builder: (context) {

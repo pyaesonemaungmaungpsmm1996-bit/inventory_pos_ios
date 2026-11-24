@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'shared_pos_session.dart';
 import 'branch_reuse.dart';
 import 'branch_reuse_picker.dart';
 import 'desktop_ui.dart';
@@ -39,23 +41,54 @@ class _MoneyAccountsPageState extends State<MoneyAccountsPage> {
   bool busy = false;
   String? error;
   int request = 0;
+  late final SharedPosSession? _shared = SharedPosSession.current;
+  Timer? _sharedRefresh;
 
   @override
   void initState() {
     super.initState();
-    if (BranchRecordsSync.reader == null) load();
+    if (_shared != null || BranchRecordsSync.reader == null) unawaited(load());
+    if (_shared != null) {
+      _sharedRefresh = Timer.periodic(const Duration(seconds: 15), (_) {
+        if (!loading) unawaited(load(background: true));
+      });
+    }
   }
 
-  Future<void> load() async {
+  @override
+  void dispose() {
+    _sharedRefresh?.cancel();
+    super.dispose();
+  }
+
+  Future<void> load({bool background = false}) async {
     final ticket = ++request;
     if (mounted) {
       setState(() {
-        loading = true;
+        if (!background) loading = true;
         error = null;
       });
     }
     try {
       final db = AppDatabase.instance;
+      if (_shared case final session?) {
+        final view = await session.load();
+        if (!mounted || ticket != request) return;
+        final code = session.connection.branchCode;
+        setState(() {
+          branchId = 0;
+          branches = [{'id': 0, 'name': code, 'code': code}];
+          accounts = [
+            for (final row in (view['accounts'] as List).cast<Map>())
+              {
+                'id': row['id'], 'name': row['name'],
+                'type': row['kind'], 'balance': row['balance'],
+              },
+          ];
+          loading = false;
+        });
+        return;
+      }
       final rows = await db.getBranches();
       final preferred = branchId ?? await db.getDefaultBranchId();
       final selected = rows.any((b) => b['id'] == preferred)
@@ -165,8 +198,8 @@ class _MoneyAccountsPageState extends State<MoneyAccountsPage> {
 
   @override
   Widget build(BuildContext context) {
-    if (BranchRecordsSync.reader case final reader?) {
-      return SyncedBranchBalancePage(reader: reader, accounts: true);
+    if (_shared == null && BranchRecordsSync.reader != null) {
+      return SyncedBranchBalancePage(reader: BranchRecordsSync.reader!, accounts: true);
     }
     final total = accounts.fold<int>(
       0,
@@ -175,7 +208,7 @@ class _MoneyAccountsPageState extends State<MoneyAccountsPage> {
     return DesktopScaffold(
       body: Column(
         children: [
-          Align(
+          if (_shared == null) Align(
             alignment: Alignment.centerLeft,
             child: TextButton.icon(
               onPressed: busy || loading || branchId == null ? null : reuse,
@@ -297,7 +330,7 @@ class _MoneyAccountsPageState extends State<MoneyAccountsPage> {
                           ),
                           child: DesktopListTile(
                             isThreeLine: true,
-                            onTap: busy ? null : () => edit(a),
+                            onTap: busy || _shared != null ? null : () => edit(a),
                             leading: Icon(
                               a['type'] == 'cash'
                                   ? Icons.payments_outlined
@@ -307,7 +340,7 @@ class _MoneyAccountsPageState extends State<MoneyAccountsPage> {
                             subtitle: Text(
                               '${a['account_holder'] ?? ''} · ${a['account_number'] ?? ''}\n${_type(a['type'] as String)}\n${_money(a['balance'] as int)}\n${_t('Created at', 'စတင်သိမ်းချိန်')}: ${AppDateTime.format(a['created_at'])}',
                             ),
-                            trailing: const Icon(Icons.edit_outlined),
+                            trailing: _shared == null ? const Icon(Icons.edit_outlined) : null,
                           ),
                         );
                       },
@@ -316,7 +349,7 @@ class _MoneyAccountsPageState extends State<MoneyAccountsPage> {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
+      floatingActionButton: _shared != null ? null : FloatingActionButton(
         onPressed: loading || busy || branchId == null || error != null
             ? null
             : () => edit(),
