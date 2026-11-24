@@ -1,3 +1,4 @@
+import 'product_tracking.dart';
 import 'history_date_filter.dart';
 import 'split_payment_dialog.dart';
 import 'desktop_ui.dart';
@@ -123,7 +124,16 @@ class _PurchasePageState extends State<PurchasePage>
     }
   }
 
+  late final SharedPosSession? _sharedPurchase = SharedPosSession.current;
+  final _cloudProductIds = <String, int>{};
+  final _cloudAccountIds = <String, int>{};
+
   Future<void> initialize() async {
+    if (_sharedPurchase != null) {
+      await load();
+      if (mounted) ready = error == null;
+      return;
+    }
     Map<String, Object?>? saved;
     try {
       final json = await db.getPurchaseWork();
@@ -196,7 +206,7 @@ class _PurchasePageState extends State<PurchasePage>
   };
 
   Future<void> _saveNow() async {
-    if (!ready || !dirty || posted || posting) return;
+    if (_sharedPurchase != null || !ready || !dirty || posted || posting) return;
     final payload = jsonEncode(_snapshot());
     _lastWrite = _lastWrite
         .catchError((Object _) {})
@@ -247,7 +257,7 @@ class _PurchasePageState extends State<PurchasePage>
     _saveTimer?.cancel();
     try {
       await _lastWrite;
-      await db.deletePurchaseWork();
+      if (_sharedPurchase == null) await db.deletePurchaseWork();
       if (!mounted) return;
       setState(() {
         lines.clear();
@@ -285,6 +295,49 @@ class _PurchasePageState extends State<PurchasePage>
       });
     }
     try {
+      if (_sharedPurchase case final session?) {
+        final data = await session.load();
+        final code = session.connection.branchCode;
+        final cloudCategories = await db.getProductCategories();
+        final cloudSuppliers = await db.getContacts(kind: 'supplier', activeOnly: true);
+        if (!mounted || current != ticket) return;
+        final serials = data['serials'] as Map;
+        setState(() {
+          branchId = 0;
+          branches = [{'id': 0, 'name': code, 'code': code}];
+          categories = cloudCategories;
+          suppliers = cloudSuppliers;
+          products = [
+            for (final row in (data['stock'] as List).cast<Map>())
+              {
+                'id': _cloudProductIds.putIfAbsent(row['id'] as String, () => _cloudProductIds.length + 1),
+                'cloud_id': row['id'],
+                'name': row['name'],
+                'item_code': row['code'],
+                'barcode': row['code'],
+                'price': row['price'],
+                'stock': row['on_hand'],
+                'tracking': serials.containsKey(row['id']) ? 'serial' : 'none',
+                'category_id': cloudCategories.firstOrNull?['id'],
+              },
+          ];
+          accounts = [
+            for (final row in (data['accounts'] as List).cast<Map>())
+              {
+                'id': _cloudAccountIds.putIfAbsent(row['id'] as String, () => _cloudAccountIds.length + 1),
+                'cloud_id': row['id'],
+                'name': row['name'],
+                'type': row['kind'],
+                'balance': row['balance'],
+              },
+          ];
+          for (final account in accounts) {
+            payments.putIfAbsent(account['id'] as int, TextEditingController.new);
+          }
+          loading = false;
+        });
+        return;
+      }
       final rows = await db.getBranches();
       final preferred = resetBranch ? null : branchId;
       final fallback = await db.getDefaultBranchId();
@@ -462,6 +515,7 @@ class _PurchasePageState extends State<PurchasePage>
                       ? selectedProduct['category_id']
                       : categories.first['id'],
                   'sale_price': selectedProduct['price'],
+                  'tracking': selectedProduct['tracking'],
                   'qty': 1,
                 })
         : lines[index];
@@ -1255,6 +1309,7 @@ class _PurchasePageState extends State<PurchasePage>
   Future<void> focusPaid() => desktopFocusInScroll(paidFocus, keyboardScroll);
 
   Future<void> saveWork() async {
+    if (_sharedPurchase != null) return;
     await _saveNow();
     if (saveFailed) throw StateError('Draft save failed');
     if (mounted) {
@@ -1420,6 +1475,56 @@ class _PurchasePageState extends State<PurchasePage>
     setState(() => posting = true);
     try {
       await _lastWrite;
+      if (_sharedPurchase case final session?) {
+        if (await session.hasPending()) {
+          if (!mounted) return;
+          final retry = await desktopAsk(
+            context,
+            _t('Retry pending transaction?', 'စောင့်နေသောစာရင်း ပြန်ပို့မလား?'),
+            _t('The previous transaction will be retried before another purchase is posted.', 'အဝယ်အသစ် မတင်မီ ယခင်စာရင်းကို ပြန်ပို့ပါမည်။'),
+          );
+          if (!retry || !mounted) return;
+          await session.retry();
+        } else {
+          final sharedLines = <SharedPosLine>[];
+          for (final line in itemsToPost) {
+            final item = products.where((p) => p['id'] == line['product_id']).firstOrNull;
+            if (item == null ||
+                line['tracking'] != item['tracking'] ||
+                line['sale_price'] != item['price']) {
+              throw StateError(_t(
+                'Select an existing shared item and keep its selling price and tracking mode.',
+                'Cloud ပစ္စည်းရှိပြီးသားကို ရွေးပြီး ရောင်းဈေးနှင့် tracking ကို မူလအတိုင်းထားပါ။',
+              ));
+            }
+            sharedLines.add((
+              product: item['cloud_id'] as String,
+              label: item['name'] as String,
+              quantity: line['qty'] as int,
+              unitPrice: line['purchase_price'] as int,
+              serials: item['tracking'] == 'serial'
+                  ? [
+                      for (final lot in ProductTracking.decode(line['lots']))
+                        lot['serial'] as String,
+                    ]
+                  : null,
+            ));
+          }
+          await session.post(
+            kind: 'purchase',
+            lines: sharedLines,
+            payments: {
+              for (final payment in split)
+                accounts.singleWhere((a) => a['id'] == payment['account_id'])['cloud_id'] as String:
+                    payment['amount']!,
+            },
+            counterparty: suppliers.singleWhere((r) => r['id'] == supplierId)['name'] as String,
+          );
+        }
+        posted = true;
+        if (mounted) Navigator.pop(context);
+        return;
+      }
       final id = await db.postPurchase(
         requestKey: requestKey,
         branchId: branchId!,
@@ -2117,7 +2222,9 @@ class _PurchaseHistoryPageState extends State<PurchaseHistoryPage> {
       MaterialPageRoute(
         builder: (_) => Scaffold(
           appBar: AppBar(title: Text(_t('Purchase', 'ပစ္စည်းအဝယ်'))),
-          body: SharedPosPage(session: session, kind: kind, voucherReference: reference),
+          body: kind == SharedPosPageKind.purchase
+              ? const PurchasePage()
+              : SharedPosPage(session: session, kind: kind, voucherReference: reference),
         ),
       ),
     );

@@ -47,7 +47,7 @@ Future<Map<String, Object?>?> purchaseProductDetails(
       : '${categoryRows.single['name']}';
   final brands = (await BrandStore.list(db, categoryId)).toList();
   final canEnableSerial =
-      product != null &&
+      product != null && product['cloud_id'] == null &&
       await ProductTracking.canEnableSerial(db, product['id'] as int);
   if (!context.mounted) return null;
   final base = <String, Object?>{
@@ -170,13 +170,13 @@ Future<Map<String, Object?>?> purchaseProductDetails(
                 }
               }
               final variantChanged =
-                  product != null &&
+                  product != null && product['cloud_id'] == null &&
                   (color.text.trim() != '${product['color'] ?? ''}' ||
                       size.text.trim() != '${product['size'] ?? ''}');
               final enableSerial =
                   canEnableSerial && mode == 'serial' && !variantChanged;
               final separate =
-                  product != null &&
+                  product != null && product['cloud_id'] == null &&
                   (variantChanged ||
                       !enableSerial &&
                           mode != '${product['tracking'] ?? 'none'}');

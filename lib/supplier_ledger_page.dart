@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'shared_pos_page.dart';
+import 'shared_pos_session.dart';
 import 'app_database.dart';
 import 'desktop_ui.dart';
 
@@ -36,10 +39,20 @@ class _SupplierLedgerPageState extends State<SupplierLedgerPage> {
   bool loading = true, busy = false;
   String? error;
   int request = 0, optionRequest = 0;
+  late final SharedPosSession? _shared = SharedPosSession.current;
+  Timer? _sharedRefresh;
+  final _suppliersByName = <String, int>{};
   @override
   void initState() {
     super.initState();
-    initializeDefaultBranch();
+    if (_shared == null) {
+      unawaited(initializeDefaultBranch());
+    } else {
+      unawaited(load());
+      _sharedRefresh = Timer.periodic(const Duration(seconds: 15), (_) {
+        if (!loading && !busy) unawaited(load(background: true));
+      });
+    }
   }
 
   Future<void> initializeDefaultBranch() async {
@@ -53,11 +66,13 @@ class _SupplierLedgerPageState extends State<SupplierLedgerPage> {
 
   @override
   void dispose() {
+    _sharedRefresh?.cancel();
     search.dispose();
     super.dispose();
   }
 
   Future<void> initialize() async {
+    if (_shared != null) return load();
     final token = ++optionRequest;
     try {
       final options = await SupplierLedgerRepository.options();
@@ -83,16 +98,56 @@ class _SupplierLedgerPageState extends State<SupplierLedgerPage> {
     return matches.isEmpty ? '#$id' : '${matches.first['name']} (#$id)';
   }
 
-  Future<void> load() async {
+  Future<void> load({bool background = false}) async {
     final token = ++request;
     setState(() {
-      loading = true;
+      if (!background) loading = true;
       error = null;
     });
     final labels =
         '${_date(from)} to ${_date(to)} | Branch: ${selected(branches, branch)} | '
         'Supplier: ${selected(suppliers, supplier)} | Search: ${search.text.trim()}';
     try {
+      if (_shared case final session?) {
+        final open = await session.openBalances('purchase');
+        if (!mounted || token != request) return;
+        final code = session.connection.branchCode;
+        final query = search.text.trim().toLowerCase();
+        final matches = <List<Object?>>[];
+        for (final row in open) {
+          final name = row['counterparty'] as String? ?? '';
+          final id = _suppliersByName.putIfAbsent(name, () => _suppliersByName.length);
+          if (supplier != null && supplier != id) continue;
+          if (query.isNotEmpty &&
+              !"${row['number']} $name".toLowerCase().contains(query)) continue;
+          matches.add([
+            row['number'], name, row['total'], row['paid'], row['due'],
+          ]);
+        }
+        setState(() {
+          branch = 0;
+          branches = [{'id': 0, 'name': code, 'code': code}];
+          suppliers = [
+            for (final entry in _suppliersByName.entries)
+              {'id': entry.value, 'name': entry.key.isEmpty ? '—' : entry.key},
+          ];
+          report = ReportBook(
+            title: _t('Supplier balances due', 'Supplier အကြွေးကျန်'),
+            business: code,
+            filters: _t('Current outstanding purchases', 'လက်ရှိ အကြွေးကျန် အဝယ်များ'),
+            tables: [
+              ReportTable(
+                _t('Outstanding purchases', 'အကြွေးကျန် အဝယ်များ'),
+                const ['Voucher', 'Supplier', 'Total', 'Paid', 'Due'],
+                matches,
+                moneyColumns: const {2, 3, 4},
+              ),
+            ],
+          );
+          loading = false;
+        });
+        return;
+      }
       final value = await SupplierLedgerRepository.load(
         from: _date(from),
         to: _date(to),
@@ -282,7 +337,7 @@ class _SupplierLedgerPageState extends State<SupplierLedgerPage> {
             trailing: const Icon(Icons.search),
             onTap: busy ? null : chooseSupplier,
           ),
-          Row(
+          if (_shared == null) Row(
             children: [
               Expanded(
                 child: OutlinedButton.icon(
@@ -316,7 +371,7 @@ class _SupplierLedgerPageState extends State<SupplierLedgerPage> {
               ),
             ),
           ),
-          Padding(
+          if (_shared == null) Padding(
             padding: const EdgeInsets.symmetric(vertical: 8),
             child: Text(
               _t(
@@ -329,7 +384,7 @@ class _SupplierLedgerPageState extends State<SupplierLedgerPage> {
           if (error != null)
             TextButton(onPressed: initialize, child: Text('Retry: $error')),
           if (!loading && error == null && report != null) ...[
-            Wrap(
+            if (_shared == null) Wrap(
               spacing: 8,
               runSpacing: 8,
               children: [
@@ -364,7 +419,20 @@ class _SupplierLedgerPageState extends State<SupplierLedgerPage> {
                     else
                       ReportTablePreview(
                         table: table,
-                        onOpen: table.title == 'Supplier Transactions'
+                        onOpen: _shared != null
+                            ? (row) => Navigator.of(context).push<void>(
+                                MaterialPageRoute(
+                                  builder: (_) => Scaffold(
+                                    appBar: AppBar(title: Text('${row.first}')),
+                                    body: SharedPosPage(
+                                      session: _shared!,
+                                      kind: SharedPosPageKind.supplierBalances,
+                                      voucherReference: row.first as String?,
+                                    ),
+                                  ),
+                                ),
+                              )
+                            : table.title == 'Supplier Transactions'
                             ? openEvent
                             : table.title == 'Purchase Balances at Cutoff' ||
                                   table.title == 'Purchased Item Details'

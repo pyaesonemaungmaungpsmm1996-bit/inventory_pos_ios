@@ -172,12 +172,17 @@ class SharedPosSession {
       });
 
   Future<void> expense(String account, int amount, String note) =>
+      postExpense({account: amount}, note);
+
+  Future<void> postExpense(Map<String, int> payments, String note) =>
       _exclusive(() async {
         if (await hasPending()) {
           throw StateError('Retry the pending transaction first.');
         }
         final description = note.trim();
-        if (amount <= 0 ||
+        final amount = payments.values.fold<int>(0, (sum, value) => sum + value);
+        if (payments.length > 20 || payments.values.any((value) => value <= 0) ||
+            amount <= 0 ||
             amount > 9999999999999 ||
             description.isEmpty ||
             description.length > 300) {
@@ -189,7 +194,8 @@ class SharedPosSession {
           'note': description,
           'occurred_at': DateTime.now().toUtc().toIso8601String(),
           'payments': [
-            {'account_id': account, 'amount_minor': amount},
+                        for (final payment in payments.entries)
+              {'account_id': payment.key, 'amount_minor': payment.value},
           ],
         });
       });

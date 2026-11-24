@@ -1,3 +1,5 @@
+import 'shared_pos_page.dart';
+import 'shared_pos_session.dart';
 import 'desktop_ui.dart';
 import 'pos_ui.dart';
 import 'amount_input.dart';
@@ -38,21 +40,58 @@ class _CustomerLedgerPageState extends State<CustomerLedgerPage> {
   String search = '';
   String? error;
   int request = 0;
+  late final SharedPosSession? _shared = SharedPosSession.current;
+  Timer? _sharedRefresh;
   @override
   void initState() {
     super.initState();
     branchId = widget.initialBranchId;
+    if (_shared != null) {
+      _sharedRefresh = Timer.periodic(const Duration(seconds: 15), (_) {
+        if (!loading) unawaited(load(background: true));
+      });
+    }
     load();
   }
 
-  Future<void> load() async {
+  @override
+  void dispose() {
+    _sharedRefresh?.cancel();
+    super.dispose();
+  }
+
+  Future<void> load({bool background = false}) async {
     final ticket = ++request;
     setState(() {
-      loading = true;
+      if (!background) loading = true;
       error = null;
     });
     try {
       final db = AppDatabase.instance;
+      if (_shared case final session?) {
+        final open = await session.openBalances('sale');
+        if (!mounted || ticket != request) return;
+        final code = session.connection.branchCode;
+        final totals = <String?, int>{};
+        for (final row in open) {
+          final name = row['counterparty'] as String?;
+          totals.update(name, (total) => total + (row['due'] as int),
+              ifAbsent: () => row['due'] as int);
+        }
+        setState(() {
+          branchId = 0;
+          branches = [{'id': 0, 'name': code, 'code': code}];
+          customers = [
+            for (final entry in totals.entries)
+              {
+                'name': entry.key ?? '—', 'cloud_name': entry.key,
+                'phone': '', 'company': '', 'balance_due': entry.value,
+              },
+          ];
+          loading = false;
+        });
+        return;
+      }
       final b = await db.getBranches();
       final preferred = branchId ?? await db.getDefaultBranchId();
       final selected = b.any((r) => r['id'] == preferred)
@@ -199,14 +238,24 @@ class _CustomerLedgerPageState extends State<CustomerLedgerPage> {
                     itemBuilder: (context, i) {
                       final c = visible[i];
                       return DesktopListTile(
-                        title: Text('${c['name']} (#${c['id']})'),
+                        title: Text(_shared == null ? '${c['name']} (#${c['id']})' : '${c['name']}'),
                         subtitle: Text('${c['phone']}\n${c['company']}'),
                         trailing: MoneyText(c['balance_due'] as int),
                         onTap: () async {
                           await Navigator.push<void>(
                             context,
                             MaterialPageRoute(
-                              builder: (_) => _CustomerDetail(
+                              builder: (_) => _shared != null
+                                  ? Scaffold(
+                                      appBar: AppBar(title: Text('${c['name']}')),
+                                      body: SharedPosPage(
+                                        session: _shared!,
+                                        kind: SharedPosPageKind.customerBalances,
+                                        filterCounterparty: true,
+                                        counterparty: c['cloud_name'] as String?,
+                                      ),
+                                    )
+                                  : _CustomerDetail(
                                 customerId: c['id'] as int,
                                 branchId: branchId!,
                               ),

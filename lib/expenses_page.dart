@@ -1,3 +1,6 @@
+import 'desktop_commands.dart';
+import 'dart:async';
+import 'shared_pos_session.dart';
 import 'history_date_filter.dart';
 import 'desktop_ui.dart';
 import 'app_capabilities.dart';
@@ -217,8 +220,22 @@ class _ExpensesPageState extends State<ExpensesPage> {
   void initState() {
     super.initState();
     branchId = widget.initialBranchId;
+    if (_shared != null) {
+      _sharedRefresh = Timer.periodic(const Duration(seconds: 15), (_) {
+        if (!loading && !busy) unawaited(load(background: true));
+      });
+    }
     load();
-    recoverPickedPhoto();
+    if (_shared == null) recoverPickedPhoto();
+  }
+
+  late final SharedPosSession? _shared = SharedPosSession.current;
+  Timer? _sharedRefresh;
+
+  @override
+  void dispose() {
+    _sharedRefresh?.cancel();
+    super.dispose();
   }
 
   Future<void> recoverPickedPhoto() async {
@@ -264,14 +281,53 @@ class _ExpensesPageState extends State<ExpensesPage> {
     }
   }
 
-  Future<void> load() async {
+  Future<void> load({bool background = false}) async {
     final request = ++ticket;
     setState(() {
-      loading = true;
+      if (!background) loading = true;
       error = null;
     });
     try {
       final db = AppDatabase.instance;
+      if (_shared case final session?) {
+        final data = await session.load();
+        if (!mounted || ticket != request) return;
+        final cloudAccounts = (data['accounts'] as List).cast<Map>();
+        final code = session.connection.branchCode;
+        final rows = (data['vouchers'] as List).cast<Map>()
+            .where((row) => row['kind'] == 'expense');
+        setState(() {
+          branchId = 0;
+          branches = [{'id': 0, 'name': code, 'code': code}];
+          accounts = [
+            for (final (index, row) in cloudAccounts.indexed)
+              {
+                'id': index, 'cloud_id': row['id'], 'name': row['name'],
+                'type': row['kind'], 'balance': row['balance'],
+              },
+          ];
+          categories = [
+            {'id': 0, 'name': _t('Expense', 'အသုံးစရိတ်'), 'active': 1},
+          ];
+          expenses = [
+            for (final row in rows)
+              {
+                'id': row['number'] ?? row['id'],
+                'expense_date': row['invoice_date'] ??
+                    (row['occurred_at'] as String).split('T').first,
+                'posted_at': row['occurred_at'],
+                'category': _t('Expense', 'အသုံးစရိတ်'),
+                'note': row['note'] ?? '',
+                'amount': row['total'],
+                'payment_count': 0,
+                'status': row['status'] ?? 'posted',
+                'has_receipt': 0,
+              },
+          ];
+          loading = false;
+        });
+        return;
+      }
       final allBranches = await db.getBranches();
       final preferred = branchId ?? await db.getDefaultBranchId();
       final selected = allBranches.any((b) => b['id'] == preferred)
@@ -320,6 +376,7 @@ class _ExpensesPageState extends State<ExpensesPage> {
           accounts: accounts,
           categories: active,
           recoveredPhoto: recoveredPhoto,
+          sharedSession: _shared,
         ),
       );
       if (saved == true && mounted) {
@@ -633,7 +690,7 @@ class _ExpensesPageState extends State<ExpensesPage> {
                   ),
                 ],
               ),
-          if (!widget.historyOnly &&
+          if (_shared == null && !widget.historyOnly &&
               !loading &&
               error == null &&
               branchId != null)
@@ -650,7 +707,7 @@ class _ExpensesPageState extends State<ExpensesPage> {
                 ),
               ),
             ),
-          if (!widget.historyOnly &&
+          if (_shared == null && !widget.historyOnly &&
               !loading &&
               branchId != null &&
               categories.every((c) => c['active'] != 1))
@@ -704,7 +761,7 @@ class _ExpensesPageState extends State<ExpensesPage> {
                       desktopCells: (context, index) {
                         final r = visible[index];
                         return [
-                          desktopCellText('EXP-${r['id']}'),
+                          desktopCellText(_shared == null ? 'EXP-${r['id']}' : r['id']),
                           desktopCellText(r['expense_date']),
                           desktopCellText(r['category']),
                           desktopCellText(r['note']),
@@ -723,7 +780,9 @@ class _ExpensesPageState extends State<ExpensesPage> {
                       itemBuilder: (context, index) {
                         final row = visible[index];
                         final isVoid = row['status'] == 'void';
-                        final paymentLabel = row['payment_count'] == 1
+                        final paymentLabel = _shared != null
+                            ? '—'
+                            : row['payment_count'] == 1
                             ? row['account_name'] as String
                             : '${row['payment_count']} ${_t('accounts', 'အကောင့်')}';
                         return Card(
@@ -732,7 +791,7 @@ class _ExpensesPageState extends State<ExpensesPage> {
                             vertical: 5,
                           ),
                           child: DesktopListTile(
-                            onTap: isVoid
+                            onTap: _shared != null ? null : isVoid
                                 ? () => showReceipt(row)
                                 : () => editEntry(row),
                             title: Text(
@@ -748,7 +807,7 @@ class _ExpensesPageState extends State<ExpensesPage> {
                             leading: row['has_receipt'] == 1
                                 ? const Icon(Icons.receipt_long_outlined)
                                 : const Icon(Icons.receipt_outlined),
-                            trailing: PopupMenuButton<String>(
+                            trailing: _shared != null ? null : PopupMenuButton<String>(
                               onSelected: (action) async {
                                 if (action == 'edit') editEntry(row);
                                 if (action == 'photo') showReceipt(row);
@@ -850,8 +909,10 @@ class _ExpenseForm extends StatefulWidget {
     this.expense,
     this.existingPhoto,
     this.savedPayments = const [],
+    this.sharedSession,
   });
   final int branchId;
+  final SharedPosSession? sharedSession;
   final List<Map<String, Object?>> accounts, categories;
   final List<Map<String, Object?>> savedPayments;
   final Uint8List? recoveredPhoto, existingPhoto;
@@ -997,7 +1058,24 @@ class _ExpenseFormState extends State<_ExpenseForm> {
       error = null;
     });
     try {
-      if (widget.expense == null) {
+      if (widget.sharedSession case final session?) {
+        if (await session.hasPending()) {
+          if (!mounted) return;
+          final retry = await desktopAsk(
+            context,
+            _t('Retry pending transaction?', 'စောင့်နေသောစာရင်း ပြန်ပို့မလား?'),
+            _t('Retry the previous transaction before adding an expense.', 'အသုံးစရိတ်အသစ် မတင်မီ ယခင်စာရင်းကို ပြန်ပို့ပါ။'),
+          );
+          if (!retry) return;
+          await session.retry();
+        } else {
+          await session.postExpense({
+            for (final value in values)
+              widget.accounts.singleWhere((a) => a['id'] == value['account_id'])['cloud_id'] as String:
+                  value['amount']!,
+          }, note.text);
+        }
+      } else if (widget.expense == null) {
         await AppDatabase.instance.postExpense(
           branchId: widget.branchId,
           payments: values,
@@ -1214,7 +1292,7 @@ class _ExpenseFormState extends State<_ExpenseForm> {
                       '${_t('Expense date', 'အသုံးစရိတ်ရက်စွဲ')}: ${_date(date)}',
                     ),
                     trailing: const Icon(Icons.calendar_today_outlined),
-                    onTap: saving
+                    onTap: saving || widget.sharedSession != null
                         ? null
                         : () async {
                             final picked = await showDatePicker(
@@ -1245,7 +1323,7 @@ class _ExpenseFormState extends State<_ExpenseForm> {
                           )
                         : null,
                   ),
-                  Row(
+                  if (widget.sharedSession == null) Row(
                     children: [
                       if (photo != null)
                         ClipRRect(

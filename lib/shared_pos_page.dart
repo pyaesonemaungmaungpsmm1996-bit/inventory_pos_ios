@@ -22,10 +22,12 @@ enum SharedPosPageKind {
 }
 
 class SharedPosPage extends StatefulWidget {
-  const SharedPosPage({super.key, required this.session, required this.kind, this.voucherReference});
+  const SharedPosPage({super.key, required this.session, required this.kind, this.voucherReference, this.filterCounterparty = false, this.counterparty});
   final SharedPosSession session;
   final SharedPosPageKind kind;
   final String? voucherReference;
+  final bool filterCounterparty;
+  final String? counterparty;
 
   @override
   State<SharedPosPage> createState() => _SharedPosPageState();
@@ -101,7 +103,9 @@ class _SharedPosPageState extends State<SharedPosPage> {
         setState(() {
           _view = view;
           _dashboard = dashboard;
-          _openBalances = balances;
+          _openBalances = widget.filterCounterparty
+              ? balances.where((row) => row['counterparty'] == widget.counterparty).toList()
+              : balances;
         });
       }
     } catch (error) {
