@@ -484,11 +484,13 @@ class _HomePageState extends State<HomePage> {
     };
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
-        builder: (context) => DesktopScaffold(
+        builder: (context) => sharedKind == SharedPosPageKind.stock && session != null
+            ? page
+            : DesktopScaffold(
           appBar: AppBar(title: Text(AppLanguage.text(title))),
-          body: session != null && sharedKind != null
+          body: session != null && sharedKind != null && sharedKind != SharedPosPageKind.stock
               ? SharedPosPage(session: session, kind: sharedKind)
-              : sharedKind != null && _sharedRequired
+              : session == null && sharedKind != null && _sharedRequired
               ? _sharedConnectionStatus()
               : page,
         ),

@@ -18,7 +18,7 @@ extension _DesktopStockBalance on _StockBalancePageState {
                 spacing: 12,
                 runSpacing: 12,
                 children: [
-                  SizedBox(
+                  if (_shared == null) SizedBox(
                     width: 230,
                     child: filter(
                       t('Branch', 'ဆိုင်ခွဲ'),
@@ -27,7 +27,7 @@ extension _DesktopStockBalance on _StockBalancePageState {
                       (v) => branch = v,
                     ),
                   ),
-                  SizedBox(
+                  if (_shared == null) SizedBox(
                     width: 230,
                     child: filter(
                       t('Category', 'အမျိုးအစား'),
@@ -39,7 +39,7 @@ extension _DesktopStockBalance on _StockBalancePageState {
                       },
                     ),
                   ),
-                  SizedBox(
+                  if (_shared == null) SizedBox(
                     width: 230,
                     child: filter('Brand', brand, brands, (v) => brand = v),
                   ),
@@ -93,7 +93,7 @@ extension _DesktopStockBalance on _StockBalancePageState {
                       Text('${r['brand_name'] ?? '-'}'),
                       Text('${r['color'] ?? ''} / ${r['size'] ?? ''}'),
                       Text('${r['stock']}'),
-                      Text('${r['expired_qty']}'),
+                      Text(_shared == null ? '${r['expired_qty']}' : '—'),
                     ],
                 ],
                 onRowTap: (index) => showLots(shown[index]),

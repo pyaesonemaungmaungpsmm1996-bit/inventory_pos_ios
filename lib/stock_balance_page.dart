@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'desktop_ui.dart';
 import 'stock_balance_filter.dart';
 import 'product_tracking.dart';
@@ -9,7 +11,6 @@ import 'app_language.dart';
 import 'app_capabilities.dart';
 import 'branch_records_sync.dart';
 import 'synced_branch_balance_page.dart';
-import 'shared_pos_page.dart';
 import 'shared_pos_session.dart';
 part 'desktop_stock_balance.dart';
 
@@ -30,16 +31,62 @@ class _StockBalancePageState extends State<StockBalancePage> {
   bool loading = true;
   bool branchInitialized = false;
   int request = 0;
+  Timer? _refreshTimer;
+  SharedPosSession? _shared;
+  Map<Object?, Object?> _serials = const {};
   String t(String e, String m) => AppLanguage.current.value == 'my' ? m : e;
   @override
   void initState() {
     super.initState();
     branch = widget.initialBranchId ?? 0;
-    if (BranchRecordsSync.reader == null) load();
+    _shared = SharedPosSession.current;
+    if (_shared != null || BranchRecordsSync.reader == null) unawaited(load());
+    if (_shared != null) {
+      _refreshTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+        if (!loading) unawaited(load());
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> load() async {
     final token = ++request;
+    if (_shared case final session?) {
+      setState(() => loading = true);
+      try {
+        final result = await session.load();
+        if (!mounted || token != request) return;
+        setState(() {
+          rows = [
+            for (final item in (result['stock'] as List).cast<Map>())
+              {
+                'id': item['id'],
+                'item_code': item['code'],
+                'name': item['name'],
+                'stock': item['on_hand'],
+                'branch_name': session.connection.branchCode,
+                'expired_qty': 0,
+              },
+          ];
+          _serials = result['serials'] as Map;
+          error = '';
+          loading = false;
+        });
+      } catch (e) {
+        if (mounted && token == request) {
+          setState(() {
+            error = '$e';
+            loading = false;
+          });
+        }
+      }
+      return;
+    }
     if (!branchInitialized) {
       branchInitialized = true;
       if (widget.initialBranchId == null) {
@@ -110,14 +157,9 @@ class _StockBalancePageState extends State<StockBalancePage> {
   );
   @override
   Widget build(BuildContext context) {
-    if (SharedPosSession.current case final session?) {
-      return Scaffold(
-        appBar: AppBar(title: Text(AppLanguage.text('Balance Stock'))),
-        body: SharedPosPage(session: session, kind: SharedPosPageKind.stock),
-      );
-    }
-    if (BranchRecordsSync.reader case final reader?) {
-      return SyncedBranchBalancePage(reader: reader, accounts: false);
+
+    if (_shared == null && BranchRecordsSync.reader != null) {
+      return SyncedBranchBalancePage(reader: BranchRecordsSync.reader!, accounts: false);
     }
     final query = search.toLowerCase();
     final shown = rows
@@ -137,12 +179,14 @@ class _StockBalancePageState extends State<StockBalancePage> {
       body: DesktopListView(
         padding: const EdgeInsets.all(16),
         children: [
+          if (_shared == null) ...[
           filter(t('Branch', 'ဆိုင်ခွဲ'), branch, branches, (v) => branch = v),
           filter(t('Category', 'အမျိုးအစား'), category, categories, (v) {
             category = v;
             brand = 0;
           }),
           filter('Brand', brand, brands, (v) => brand = v),
+          ],
           TextField(
             onChanged: (v) => setState(() => search = v),
             decoration: InputDecoration(
@@ -186,6 +230,27 @@ class _StockBalancePageState extends State<StockBalancePage> {
 
   void updateDesktopStock(VoidCallback update) => setState(update);
   Future<void> showLots(Map row) async {
+    if (_shared != null) {
+      final serials = _serials[row['id']] as List? ?? const [];
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text('${row['name']}'),
+          content: SingleChildScrollView(
+            child: Text(serials.isEmpty
+                ? t('No available serial numbers.', 'ရနိုင်သော serial မရှိပါ။')
+                : serials.join('\n')),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text(t('Close', 'ပိတ်ရန်')),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
     final db = await AppDatabase.instance.database;
     final lots = await db.query(
       'stock_lots',
