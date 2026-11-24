@@ -82,6 +82,9 @@ class DashboardPageState extends State<DashboardPage> {
   bool today = false, loading = true;
   int request = 0;
   Timer? _sharedRefresh;
+  static const _sharedActions = [
+    'purchase', 'stock', 'collections', 'expenses', 'account',
+  ];
   Map<String, Object?>? data;
   String? error, preferenceKey;
   String t(String en, String my) => AppLanguage.current.value == 'my' ? my : en;
@@ -120,6 +123,17 @@ class DashboardPageState extends State<DashboardPage> {
         final values = await Future.wait([session.dashboard(), session.load()]);
         if (!mounted || token != request) return;
         final summary = values.first;
+        final connection = session.connection;
+        final key = 'dashboard_shared:${connection.shop}:${connection.branchCode}';
+        final rawActions = key == preferenceKey ? null : await prefs.getString('$key:actions');
+        if (!mounted || token != request) return;
+        var actions = key == preferenceKey ? shortcuts : [..._sharedActions];
+        if (rawActions != null) {
+          try {
+            final saved = jsonDecode(rawActions) as List;
+            actions = saved.whereType<String>().where(_sharedActions.contains).toSet().toList();
+          } catch (_) {}
+        }
         final recent = (values.last['vouchers'] as List).cast<Map>().toList()
           ..sort((a, b) => '${b['occurred_at']}'.compareTo('${a['occurred_at']}'));
         setState(() {
@@ -127,9 +141,8 @@ class DashboardPageState extends State<DashboardPage> {
           branches = [
             {'id': 0, 'name': session.connection.branchCode, 'code': session.connection.branchCode},
           ];
-          if (data == null && !background) {
-            shortcuts = ['purchase', 'stock', 'collections', 'expenses', 'account'];
-          }
+          shortcuts = actions;
+          preferenceKey = key;
           data = {
             'sales': summary[today ? 'sales_today' : 'sales_month'],
             'expenses': summary[today ? 'expenses_today' : 'expenses_month'],
@@ -229,7 +242,8 @@ class DashboardPageState extends State<DashboardPage> {
     var selected = [...shortcuts];
     final order = [
       ...selected,
-      ...dashboardActions.where((a) => !selected.contains(a)),
+      ...(widget.sharedSession == null ? dashboardActions : _sharedActions)
+          .where((a) => !selected.contains(a)),
     ];
     String? saveError;
     bool saving = false;
