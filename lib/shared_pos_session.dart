@@ -232,6 +232,21 @@ class SharedPosSession {
     });
   });
 
+  Future<void> correctVoucher(
+    String voucher,
+    Map<String, Object?> replacement,
+    String reason,
+  ) => _exclusive(() async {
+    if (await hasPending()) {
+      throw StateError('Retry the pending voucher first.');
+    }
+    await _stage({
+      'kind': 'correction',
+      'voucher': voucher,
+      'replacement': replacement,
+      'reason': reason.trim(),
+    });
+  });
   Future<void> voidVoucher(String voucher, String reason) =>
       _exclusive(() async {
         if (await hasPending()) {
@@ -297,6 +312,17 @@ class SharedPosSession {
               'serial_numbers',
             ])
               key: command[key],
+          },
+        );
+      } else if (command['kind'] == 'correction') {
+        await connection.client.rpc(
+          'tp_stock_sync_correct_voucher',
+          params: {
+            ..._identity,
+            'operation': pending['operation'],
+            'voucher': command['voucher'],
+            'replacement': command['replacement'],
+            'reason': command['reason'],
           },
         );
       } else if (command['kind'] == 'void') {

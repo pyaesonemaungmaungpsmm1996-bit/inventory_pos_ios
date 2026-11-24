@@ -469,6 +469,125 @@ class _SharedPosPageState extends State<SharedPosPage> {
     );
   }
 
+  Future<void> _correctVoucher(Map voucher) async {
+    final lines = (voucher['lines'] as List).cast<Map>();
+    final quantities = [for (final line in lines) '${line['qty']}'];
+    final prices = [for (final line in lines) '${line['unit_price']}'];
+    final paymentRows = (voucher['payments'] as List).cast<Map>();
+    final amounts = <String, String>{
+      for (final payment in paymentRows)
+        payment['account_id'] as String: '${payment['amount_minor']}',
+    };
+    var discount = '${voucher['discount'] ?? 0}';
+    var name = voucher['counterparty'] as String? ?? '';
+    var reason = '';
+    final form = GlobalKey<FormState>();
+
+    String? checkInteger(String? value, {bool positive = false}) {
+      final number = int.tryParse(value?.trim() ?? '');
+      return number == null || number < (positive ? 1 : 0)
+          ? 'Enter a valid amount in whole kyats.'
+          : null;
+    }
+
+    final submitted = await showDialog<bool>(
+      context: context,
+      builder: (dialog) => AlertDialog(
+        title: Text('Correct ${voucher['number']}'),
+        content: SizedBox(
+          width: 520,
+          child: Form(
+            key: form,
+            child: SingleChildScrollView(
+              child: Column(
+                children: [
+                  const Text('The original will be marked void and a corrected voucher will be recorded.'),
+                  for (final (index, line) in lines.indexed) ...[
+                    ListTile(title: Text('${line['item_code']} · ${line['item_name']}')),
+                    TextFormField(
+                      initialValue: quantities[index],
+                      enabled: (line['serials'] as List?)?.isNotEmpty != true,
+                      decoration: const InputDecoration(labelText: 'Quantity'),
+                      keyboardType: TextInputType.number,
+                      validator: (value) => checkInteger(value, positive: true),
+                      onChanged: (value) => quantities[index] = value,
+                    ),
+                    TextFormField(
+                      initialValue: prices[index],
+                      decoration: const InputDecoration(labelText: 'Unit price'),
+                      keyboardType: TextInputType.number,
+                      validator: (value) => checkInteger(value, positive: true),
+                      onChanged: (value) => prices[index] = value,
+                    ),
+                  ],
+                  if (voucher['kind'] == 'sale')
+                    TextFormField(
+                      initialValue: discount,
+                      decoration: const InputDecoration(labelText: 'Discount'),
+                      keyboardType: TextInputType.number,
+                      validator: checkInteger,
+                      onChanged: (value) => discount = value,
+                    ),
+                  for (final account in _rows('accounts'))
+                    TextFormField(
+                      initialValue: amounts[account['id']] ?? '0',
+                      decoration: InputDecoration(labelText: 'Payment · ${account['name']}'),
+                      keyboardType: TextInputType.number,
+                      validator: checkInteger,
+                      onChanged: (value) => amounts[account['id'] as String] = value,
+                    ),
+                  TextFormField(
+                    initialValue: name,
+                    maxLength: 150,
+                    decoration: const InputDecoration(labelText: 'Customer / supplier'),
+                    onChanged: (value) => name = value.trim(),
+                  ),
+                  TextFormField(
+                    maxLength: 300,
+                    decoration: const InputDecoration(labelText: 'Correction reason'),
+                    onChanged: (value) => reason = value.trim(),
+                    validator: (value) => value == null || value.trim().isEmpty ? 'Enter the reason.' : null,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialog, false), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () {
+              if (form.currentState!.validate()) Navigator.pop(dialog, true);
+            },
+            child: const Text('Save correction'),
+          ),
+        ],
+      ),
+    );
+    if (submitted != true || !mounted) return;
+    await _run(() => widget.session.correctVoucher(
+      voucher['id'] as String,
+      {
+        'lines': [
+          for (final (index, line) in lines.indexed)
+            {
+              'product_id': line['product_id'],
+              'quantity': int.parse(quantities[index].trim()),
+              'unit_minor': int.parse(prices[index].trim()),
+              if (line['serials'] != null) 'serials': line['serials'],
+            },
+        ],
+        'payments': [
+          for (final payment in amounts.entries)
+            if (int.parse(payment.value.trim()) > 0)
+              {'account_id': payment.key, 'amount_minor': int.parse(payment.value.trim())},
+        ],
+        'discount_minor': int.parse(discount.trim()),
+        'counterparty': name,
+      },
+      reason,
+    ));
+  }
   Future<void> _printVoucher(Map row) async {
     final rawLines = (row['lines'] as List? ?? const []).cast<Map>();
     final lines = [
@@ -1008,6 +1127,14 @@ class _SharedPosPageState extends State<SharedPosPage> {
                     onPressed: _busy ? null : () => _printVoucher(row),
                     icon: const Icon(Icons.print_outlined),
                     label: Text(AppLanguage.text('Print / PDF')),
+                  ),
+                if (row['replacement_id'] case final String replacement)
+                  ListTile(title: Text('Corrected voucher: $replacement')),
+                if (row['can_void'] == true && row['payments'] is List)
+                  OutlinedButton.icon(
+                    onPressed: _busy || _pending ? null : () => _correctVoucher(row),
+                    icon: const Icon(Icons.edit_outlined),
+                    label: Text(AppLanguage.text('Edit')),
                   ),
                 if (row['can_void'] == true)
                   OutlinedButton(
