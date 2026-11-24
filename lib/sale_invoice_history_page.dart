@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'shared_pos_page.dart';
+import 'shared_pos_session.dart';
 import 'live_sales_page.dart';
 
 import 'voucher_code.dart';
@@ -38,12 +41,28 @@ class _SaleInvoiceHistoryPageState extends State<SaleInvoiceHistoryPage> {
   String filter = 'all', search = '';
   DateTime? fromDate, toDate;
   bool loading = true;
+  late final SharedPosSession? _shared = SharedPosSession.current;
+  Timer? _refresh;
+  bool _refreshing = false;
   String? error;
   String t(String en, String my) => AppLanguage.current.value == 'my' ? my : en;
   @override
   void initState() {
     super.initState();
-    initializeDefaultBranch();
+    if (_shared == null) {
+      unawaited(initializeDefaultBranch());
+    } else {
+      unawaited(load());
+      _refresh = Timer.periodic(const Duration(seconds: 15), (_) {
+        unawaited(load(background: true));
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _refresh?.cancel();
+    super.dispose();
   }
 
   Future<void> initializeDefaultBranch() async {
@@ -55,12 +74,45 @@ class _SaleInvoiceHistoryPageState extends State<SaleInvoiceHistoryPage> {
     if (mounted) await load();
   }
 
-  Future<void> load() async {
+  Future<void> load({bool background = false}) async {
+    if (!mounted || _refreshing) return;
+    _refreshing = true;
     setState(() {
-      loading = true;
+      if (!background) loading = true;
       error = null;
     });
     try {
+      if (_shared case final session?) {
+        final view = await session.load();
+        if (!mounted) return;
+        final code = session.connection.branchCode;
+        final invoices = (view['vouchers'] as List).cast<Map>()
+            .where((row) => row['kind'] == 'sale').toList()
+          ..sort((a, b) => '${b['occurred_at']}'.compareTo('${a['occurred_at']}'));
+        setState(() {
+          branches = [{'id': 0, 'name': code}];
+          rows = [
+            for (final row in invoices)
+              {
+                'id': row['id'] ?? row['number'],
+                'reference': row['number'] ?? row['id'],
+                'branch_id': 0,
+                'branch_name': code,
+                'customer_name': row['counterparty'] ?? '—',
+                'invoice_date': row['invoice_date'] ??
+                    (row['occurred_at'] as String).split('T').first,
+                'total': row['total'],
+                'balance_due': row['due'] ?? 0,
+                'currency_code': view['currency'] ?? 'MMK',
+                'currency_digits': 0,
+                'record_kind': 'invoice',
+                'status': row['status'] ?? 'posted',
+              },
+          ];
+          loading = false;
+        });
+        return;
+      }
       final db = await AppDatabase.instance.database;
       final b = await AppDatabase.instance.getBranches();
       final r = await SaleInvoiceHistoryRepository.list(db);
@@ -81,13 +133,33 @@ class _SaleInvoiceHistoryPageState extends State<SaleInvoiceHistoryPage> {
           );
         });
       }
+    } finally {
+      _refreshing = false;
     }
   }
 
-  String number(Map<String, Object?> row) => row['record_kind'] == 'draft'
+  String number(Map<String, Object?> row) => (row['reference'] as String?) ?? (row['record_kind'] == 'draft'
       ? 'DRAFT-${row['id'].toString().padLeft(6, '0')}'
-      : VoucherCode.displayNumber(row);
+      : VoucherCode.displayNumber(row));
   Future<void> open(Map<String, Object?> row) async {
+    if (_shared case final session?) {
+      final reference = row['reference'] as String?;
+      if (reference == null) return;
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute(
+          builder: (_) => Scaffold(
+            appBar: AppBar(title: Text(reference)),
+            body: SharedPosPage(
+              session: session,
+              kind: SharedPosPageKind.sales,
+              voucherReference: reference,
+            ),
+          ),
+        ),
+      );
+      if (mounted) await load();
+      return;
+    }
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
         builder: (_) => row['record_kind'] == 'draft'
@@ -192,7 +264,7 @@ class _SaleInvoiceHistoryPageState extends State<SaleInvoiceHistoryPage> {
                     toDate = to;
                   }),
                 ),
-                OutlinedButton.icon(
+                if (_shared == null) OutlinedButton.icon(
                   onPressed: () => Navigator.of(context).push<void>(
                     MaterialPageRoute(builder: (_) => const LiveSalesPage()),
                   ),

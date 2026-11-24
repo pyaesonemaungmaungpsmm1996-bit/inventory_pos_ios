@@ -484,7 +484,8 @@ class _HomePageState extends State<HomePage> {
     };
     final usesOriginalLayout =
         sharedKind == SharedPosPageKind.stock ||
-        sharedKind == SharedPosPageKind.purchases;
+        sharedKind == SharedPosPageKind.purchases ||
+        sharedKind == SharedPosPageKind.sales;
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
         builder: (context) {
