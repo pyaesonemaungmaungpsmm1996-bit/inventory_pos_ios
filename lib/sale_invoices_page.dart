@@ -1081,7 +1081,21 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
               'type': account['kind'], 'balance': account['balance'],
             },
         ];
+        final code = session.connection.branchCode;
+        final localBranch = (await db.getBranches()).where((row) =>
+            row['code'].toString().toLowerCase() == code.toLowerCase()).firstOrNull;
+        final employees = localBranch == null
+            ? <Map<String, Object?>>[]
+            : await db.getEmployees(branchId: localBranch['id'] as int, activeOnly: true);
+        final user = session.connection.client.auth.currentUser;
+        final displayName = user?.userMetadata?['full_name'] as String? ??
+            user?.email ?? _t('Signed-in operator', 'ဝင်ထားသော အရောင်းဝန်ထမ်း');
+        if (!mounted || request != ticket) return;
         setState(() {
+          staff = employees.isEmpty ? [{'id': 0, 'name': displayName}] : employees;
+          if (!staff.any((row) => row['id'] == employeeId)) {
+            employeeId = staff.length == 1 ? staff.single['id'] as int : null;
+          }
           products = cloudProducts;
           _sharedLots = cloudLots;
           desktopAccounts = accounts;
@@ -1439,7 +1453,7 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
     }
     if (_pendingLine != null ||
         lines.isEmpty ||
-        (widget.sharedSession == null && employeeId == null) ||
+        employeeId == null ||
         subtotal > 9000000000000) {
       setState(
         () => error = _t(
@@ -1496,8 +1510,10 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
                 : null,
           ));
         }
-        await session.post(
+        final salesperson = staff.singleWhere((row) => row['id'] == employeeId)['name'] as String;
+        final id = await session.post(
           kind: 'sale',
+          salesperson: salesperson,
           lines: sharedLines,
           discount: discountAmount,
           payments: {
@@ -1509,7 +1525,48 @@ class _SaleDraftFormState extends State<_SaleDraftForm>
         );
         if (!mounted) return;
         _dirty = false;
-        await _pop();
+        final number = 'INV-$id';
+        try {
+          await showVoucherPrintPopup(context, {
+            'shared_voucher': true,
+            'document_number': number,
+            'branch_code_snapshot': session.connection.branchCode,
+            'branch_name_snapshot': session.connection.branchCode,
+            'invoice_date': _date(AppDateTime.today()),
+            'employee_name': salesperson,
+            'customer_name': name.text,
+            'subtotal': subtotal,
+            'discount_amount': discountAmount,
+            'total': desktopTotal,
+            'paid': desktopPaidAmount,
+            'balance_due': desktopBalance,
+            'status': 'posted',
+            'items': [
+              for (final (index, line) in lines.indexed)
+                {
+                  'item_code': line['item_code'],
+                  'item_name': line['item_name'],
+                  'qty': sharedLines[index].quantity,
+                  'price': sharedLines[index].unitPrice,
+                  'amount': sharedLines[index].quantity * sharedLines[index].unitPrice,
+                  'tracking_json': [
+                    for (final serial in sharedLines[index].serials ?? const <String>[])
+                      {'serial': serial, 'qty': 1},
+                  ],
+                },
+            ],
+          }, filename: '$number.pdf');
+        } catch (_) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text(_t(
+                'Sale saved. Open Sale Invoice to retry printing.',
+                'အရောင်းသိမ်းပြီးပါပြီ။ Sale Invoice မှ Print ပြန်ထုတ်နိုင်သည်။',
+              )),
+            ));
+          }
+        }
+        if (mounted) await _pop();
         return;
       }
       int? contactId = customerId;

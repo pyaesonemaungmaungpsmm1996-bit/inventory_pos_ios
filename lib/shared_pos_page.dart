@@ -620,6 +620,7 @@ class _SharedPosPageState extends State<SharedPosPage> {
           'currency_code': _view?['currency'] ?? 'MMK',
           'currency_digits': 0,
           'customer_name': row['counterparty'],
+          'employee_name': row['salesperson'],
           'status': row['status'],
           'void_reason': row['void_reason'],
           'subtotal': subtotal,
@@ -1083,6 +1084,7 @@ class _SharedPosPageState extends State<SharedPosPage> {
           for (final row in visibleVouchers.where((row) =>
               widget.voucherReference == null || row['number'] == widget.voucherReference))
             ExpansionTile(
+              initiallyExpanded: widget.voucherReference != null,
               title: Text('${row['number'] ?? row['occurred_at']}'),
               subtitle: row['status'] == 'void'
                   ? const Text('Voided')
@@ -1114,6 +1116,8 @@ class _SharedPosPageState extends State<SharedPosPage> {
                 ),
                 if ((row['returns'] as List?)?.isNotEmpty == true)
                   ListTile(title: Text('Refunded: ${_money(row['refunded'])}')),
+                if (row['salesperson'] case final String salesperson)
+                  ListTile(title: Text('Salesperson: ')),
                 if (row['counterparty'] case final String name)
                   ListTile(title: Text(name)),
                 if (row['void_reason'] case final String reason)

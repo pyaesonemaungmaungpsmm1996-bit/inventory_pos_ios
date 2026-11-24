@@ -71,12 +71,13 @@ class SharedPosSession {
   Future<bool> hasPending() async =>
       await _storage.containsKey(key: _pendingKey);
 
-  Future<void> post({
+  Future<String> post({
     required String kind,
     required List<SharedPosLine> lines,
     required Map<String, int> payments,
     int discount = 0,
     String? counterparty,
+    String? salesperson,
   }) => _exclusive(() async {
     if (await hasPending()) {
       throw StateError('Retry the pending voucher first.');
@@ -121,6 +122,7 @@ class SharedPosSession {
       'occurred_at': DateTime.now().toUtc().toIso8601String(),
       'discount_minor': discount,
       if (name.isNotEmpty) 'counterparty': name,
+      if (salesperson != null) 'salesperson': salesperson.trim(),
       'lines': [
         for (final line in lines)
           {
@@ -135,7 +137,7 @@ class SharedPosSession {
           {'account_id': payment.key, 'amount_minor': payment.value},
       ],
     };
-    await _stage(command);
+    return _stage(command);
   });
 
   Future<void> deposit(String account, int amount) => _exclusive(() async {
@@ -200,12 +202,14 @@ class SharedPosSession {
         });
       });
 
-  Future<void> _stage(Map<String, Object?> command) async {
+  Future<String> _stage(Map<String, Object?> command) async {
+    final operation = newStockSyncId();
     await _storage.write(
       key: _pendingKey,
-      value: jsonEncode({'operation': newStockSyncId(), 'command': command}),
+      value: jsonEncode({'operation': operation, 'command': command}),
     );
     await _sendPending();
+    return operation;
   }
 
   Future<void> retry() => _exclusive(_sendPending);
@@ -279,11 +283,11 @@ class SharedPosSession {
     });
   });
 
-  Future<void> _exclusive(Future<void> Function() action) async {
+  Future<T> _exclusive<T>(Future<T> Function() action) async {
     if (_posting) throw StateError('A voucher is already being posted.');
     _posting = true;
     try {
-      await action();
+      return await action();
     } finally {
       _posting = false;
     }

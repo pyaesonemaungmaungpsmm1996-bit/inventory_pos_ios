@@ -25,10 +25,19 @@ Future<void> showInvoicePrintPopup(
   int id, {
   bool purchase = false,
 }) async {
-  final settings = await InvoicePrintSettings.load();
   final sale = purchase
       ? await purchasePrintSnapshot(id)
       : await AppDatabase.instance.getConfirmedSale(id);
+  if (!context.mounted) return;
+  await showVoucherPrintPopup(context, sale, filename: '${purchase ? 'PUR' : 'INV'}-$id.pdf');
+}
+
+Future<void> showVoucherPrintPopup(
+  BuildContext context,
+  Map<String, Object?> sale, {
+  required String filename,
+}) async {
+  final settings = await InvoicePrintSettings.load();
   final pdf = await buildInvoicePdf(
     sale: sale,
     settings: settings,
@@ -65,7 +74,7 @@ Future<void> showInvoicePrintPopup(
               child: VoucherPdfPreview(
                 bytes: pdf.bytes,
                 format: pdf.format,
-                name: '${purchase ? 'PUR' : 'INV'}-$id.pdf',
+                name: filename,
               ),
             ),
           ],
