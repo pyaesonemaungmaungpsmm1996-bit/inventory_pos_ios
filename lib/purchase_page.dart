@@ -15,6 +15,8 @@ import 'product_details_form.dart';
 import 'amount_input.dart';
 
 import 'dart:async';
+import 'shared_pos_page.dart';
+import 'shared_pos_session.dart';
 import 'dart:convert';
 import 'dart:math';
 
@@ -1798,14 +1800,32 @@ class _PurchaseHistoryPageState extends State<PurchaseHistoryPage> {
       purchases = [],
       supplierBalances = [];
   int? branchId;
+  SharedPosSession? _sharedHistory;
+  Timer? _sharedHistoryRefresh;
+  int _historyRequest = 0;
   bool loading = true;
   String? error;
   @override
   void initState() {
     super.initState();
     branchId = widget.initialBranchId;
+    _sharedHistory = SharedPosSession.current;
+    if (_sharedHistory != null) {
+      _sharedHistoryRefresh = Timer.periodic(const Duration(seconds: 15), (_) {
+        if (!loading) unawaited(load(background: true));
+      });
+    }
     start();
   }
+
+  @override
+  void dispose() {
+    _sharedHistoryRefresh?.cancel();
+    super.dispose();
+  }
+
+  String purchaseReference(Map<String, Object?> row) =>
+      row['reference'] as String? ?? _no(row['id'] as int);
 
   Future<void> start() async {
     await load();
@@ -1814,14 +1834,60 @@ class _PurchaseHistoryPageState extends State<PurchaseHistoryPage> {
     }
   }
 
-  Future<void> load() async {
+  Future<void> load({bool background = false}) async {
+    final request = ++_historyRequest;
     if (mounted) {
       setState(() {
-        loading = true;
+        if (!background) loading = true;
         error = null;
       });
     }
     try {
+      if (_sharedHistory case final session?) {
+        final view = await session.load();
+        if (!mounted || request != _historyRequest) return;
+        final history = (view['vouchers'] as List).cast<Map>()
+            .where((row) => row['kind'] == 'purchase').toList()
+          ..sort((a, b) => '${b['occurred_at']}'.compareTo('${a['occurred_at']}'));
+        final balances = <String, ({int count, int amount})>{};
+        final mapped = <Map<String, Object?>>[];
+        for (final row in history) {
+          final supplier = row['counterparty'] as String? ?? '—';
+          final due = row['due'] as int? ?? 0;
+          if (due > 0 && row['status'] != 'void') {
+            final old = balances[supplier];
+            balances[supplier] = (
+              count: (old?.count ?? 0) + 1,
+              amount: (old?.amount ?? 0) + due,
+            );
+          }
+          mapped.add({
+            'id': mapped.length,
+            'reference': row['number'],
+            'branch_id': 0,
+            'supplier_name': supplier,
+            'invoice_date': row['invoice_date'] ??
+                (row['occurred_at'] as String).split('T').first,
+            'confirmed_at': row['occurred_at'],
+            'total': row['total'],
+            'balance_due': due,
+            'status': row['status'],
+          });
+        }
+        setState(() {
+          branchId = 0;
+          branches = [
+            {'id': 0, 'name': session.connection.branchCode, 'code': session.connection.branchCode},
+          ];
+          purchases = mapped;
+          supplierBalances = [
+            for (final entry in balances.entries)
+              {'name': entry.key, 'purchase_count': entry.value.count, 'balance_due': entry.value.amount},
+          ];
+          loading = false;
+        });
+        return;
+      }
       final db = AppDatabase.instance;
       final rows = await db.getBranches();
       final preferred = branchId ?? await db.getDefaultBranchId();
@@ -1855,6 +1921,10 @@ class _PurchaseHistoryPageState extends State<PurchaseHistoryPage> {
 
   Future<void> create() async {
     if (!widget.allowDraftEditing) return;
+    if (_sharedHistory case final session?) {
+      await _openSharedHistory(session, SharedPosPageKind.purchase);
+      return;
+    }
     final id = await Navigator.push<int>(
       context,
       MaterialPageRoute(
@@ -2038,7 +2108,34 @@ class _PurchaseHistoryPageState extends State<PurchaseHistoryPage> {
     }
   }
 
+  Future<void> _openSharedHistory(
+    SharedPosSession session,
+    SharedPosPageKind kind, {
+    String? reference,
+  }) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => Scaffold(
+          appBar: AppBar(title: Text(_t('Purchase', 'ပစ္စည်းအဝယ်'))),
+          body: SharedPosPage(session: session, kind: kind, voucherReference: reference),
+        ),
+      ),
+    );
+    if (mounted) await load();
+  }
+
   Future<void> detail(int id) async {
+    if (_sharedHistory case final session?) {
+      final row = purchases.where((row) => row['id'] == id).firstOrNull;
+      if (row != null) {
+        await _openSharedHistory(
+          session,
+          SharedPosPageKind.purchases,
+          reference: row['reference'] as String?,
+        );
+      }
+      return;
+    }
     try {
       final purchase = await AppDatabase.instance.getPurchase(id);
       if (!mounted) return;
@@ -2446,7 +2543,7 @@ class _PurchaseHistoryPageState extends State<PurchaseHistoryPage> {
                               desktopCells: (context, index) {
                                 final r = visible[index];
                                 return [
-                                  desktopCellText('PUR-${r['id']}'),
+                                  desktopCellText(purchaseReference(r)),
                                   desktopCellText(r['invoice_date']),
                                   desktopCellText(r['supplier_name']),
                                   desktopMoney(r['total']),
@@ -2461,7 +2558,7 @@ class _PurchaseHistoryPageState extends State<PurchaseHistoryPage> {
                                 final p = visible[index];
                                 return DesktopListTile(
                                   title: Text(
-                                    '${_no(p['id'] as int)} · ${p['supplier_name']}',
+                                    '${purchaseReference(p)} · ${p['supplier_name']}',
                                   ),
                                   subtitle: Text(
                                     '${p['status'] == 'void' ? 'VOID · ' : ''}${p['invoice_date']} · ${AppDateTime.format(p['confirmed_at'])}',

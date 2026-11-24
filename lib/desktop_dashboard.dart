@@ -209,7 +209,7 @@ extension _DesktopDashboard on DashboardPageState {
                 ),
               ),
               TextButton(
-                onPressed: branch == null || loading
+                onPressed: widget.sharedSession != null || branch == null || loading
                     ? null
                     : () async {
                         await Navigator.push<void>(
@@ -243,7 +243,7 @@ extension _DesktopDashboard on DashboardPageState {
                 for (final row in recent)
                   [
                     Text(
-                      '${row['kind'] == 'sale'
+                      row['reference'] as String? ?? '${row['kind'] == 'sale'
                           ? 'INV'
                           : row['kind'] == 'purchase'
                           ? 'PUR'

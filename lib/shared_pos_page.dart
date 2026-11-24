@@ -22,9 +22,10 @@ enum SharedPosPageKind {
 }
 
 class SharedPosPage extends StatefulWidget {
-  const SharedPosPage({super.key, required this.session, required this.kind});
+  const SharedPosPage({super.key, required this.session, required this.kind, this.voucherReference});
   final SharedPosSession session;
   final SharedPosPageKind kind;
+  final String? voucherReference;
 
   @override
   State<SharedPosPage> createState() => _SharedPosPageState();
@@ -911,7 +912,8 @@ class _SharedPosPageState extends State<SharedPosPage> {
         if (_balancePage ||
             kind == SharedPosPageKind.sales ||
             kind == SharedPosPageKind.purchases)
-          for (final row in visibleVouchers)
+          for (final row in visibleVouchers.where((row) =>
+              widget.voucherReference == null || row['number'] == widget.voucherReference))
             ExpansionTile(
               title: Text('${row['number'] ?? row['occurred_at']}'),
               subtitle: row['status'] == 'void'

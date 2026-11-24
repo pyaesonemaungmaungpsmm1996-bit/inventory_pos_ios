@@ -14,7 +14,7 @@ extension _DesktopPurchaseHistory on _PurchaseHistoryPageState {
               (historyStatus == 'partial' && due > 0 && due < total) ||
               (historyStatus == 'unpaid' && due == total)) &&
           (q.isEmpty ||
-              '${_no(p['id'] as int)} ${p['supplier_name']}'
+              '${purchaseReference(p)} ${p['supplier_name']}'
                   .toLowerCase()
                   .contains(q));
     }).toList();
@@ -57,7 +57,7 @@ extension _DesktopPurchaseHistory on _PurchaseHistoryPageState {
                           },
                   ),
                 ),
-                SizedBox(
+                if (_sharedHistory == null) SizedBox(
                   width: 220,
                   child: DropdownButtonFormField<int>(
                     key: ValueKey('supplier:$branchId:$historySupplier'),
@@ -153,7 +153,7 @@ extension _DesktopPurchaseHistory on _PurchaseHistoryPageState {
               rows: [
                 for (final p in visible)
                   [
-                    Text(_no(p['id'] as int)),
+                    Text(purchaseReference(p)),
                     Text(p['invoice_date'].toString()),
                     Text(
                       (branches

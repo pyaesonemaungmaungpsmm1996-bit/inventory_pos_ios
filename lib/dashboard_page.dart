@@ -2,6 +2,8 @@ import 'desktop_ui.dart';
 import 'app_capabilities.dart';
 
 import 'dart:convert';
+import 'dart:async';
+import 'shared_pos_session.dart';
 
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -62,10 +64,12 @@ class DashboardPage extends StatefulWidget {
     required this.onAction,
     required this.onRecent,
     required this.onBranch,
+    this.sharedSession,
   });
   final Future<void> Function(String action, int branch) onAction;
   final Future<void> Function(Map<String, Object?> row, int branch) onRecent;
   final void Function(int? branch) onBranch;
+  final SharedPosSession? sharedSession;
   @override
   State<DashboardPage> createState() => DashboardPageState();
 }
@@ -77,6 +81,7 @@ class DashboardPageState extends State<DashboardPage> {
   int? branch;
   bool today = false, loading = true;
   int request = 0;
+  Timer? _sharedRefresh;
   Map<String, Object?>? data;
   String? error, preferenceKey;
   String t(String en, String my) => AppLanguage.current.value == 'my' ? my : en;
@@ -84,11 +89,17 @@ class DashboardPageState extends State<DashboardPage> {
   void initState() {
     super.initState();
     SubscriptionRuntime.changed.addListener(licenseChanged);
+    if (widget.sharedSession != null) {
+      _sharedRefresh = Timer.periodic(const Duration(seconds: 15), (_) {
+        if (!loading) unawaited(reload(background: true));
+      });
+    }
     reload();
   }
 
   @override
   void dispose() {
+    _sharedRefresh?.cancel();
     SubscriptionRuntime.changed.removeListener(licenseChanged);
     super.dispose();
   }
@@ -97,14 +108,48 @@ class DashboardPageState extends State<DashboardPage> {
     if (mounted) reload();
   }
 
-  Future<void> reload() async {
+  Future<void> reload({bool background = false}) async {
     final token = ++request;
     setState(() {
       loading = true;
       error = null;
-      data = null;
+      if (!background) data = null;
     });
     try {
+      if (widget.sharedSession case final session?) {
+        final values = await Future.wait([session.dashboard(), session.load()]);
+        if (!mounted || token != request) return;
+        final summary = values.first;
+        final recent = (values.last['vouchers'] as List).cast<Map>().toList()
+          ..sort((a, b) => '${b['occurred_at']}'.compareTo('${a['occurred_at']}'));
+        setState(() {
+          branch = 0;
+          branches = [
+            {'id': 0, 'name': session.connection.branchCode, 'code': session.connection.branchCode},
+          ];
+          if (data == null && !background) {
+            shortcuts = ['purchase', 'stock', 'collections', 'expenses', 'account'];
+          }
+          data = {
+            'sales': summary[today ? 'sales_today' : 'sales_month'],
+            'expenses': summary[today ? 'expenses_today' : 'expenses_month'],
+            'balance': summary['balance'],
+            'loaded_at': DateTime.now().toUtc().toIso8601String(),
+            'recent': [
+              for (final row in recent.take(8))
+                <String, Object?>{
+                  'reference': row['number'] ?? row['kind'],
+                  'kind': row['kind'],
+                  'recorded_at': row['occurred_at'],
+                  'amount': row['total'],
+                  'status': row['status'],
+                },
+            ],
+          };
+          loading = false;
+        });
+        return;
+      }
       final policy = SubscriptionRuntime.effective(
         await SubscriptionRuntime.read(),
         DateTime.now(),
@@ -381,7 +426,12 @@ class DashboardPageState extends State<DashboardPage> {
                 'ဆိုင်ခွဲမရှိပါ။ Branches နှင့် POS လိုင်စင်ကို စစ်ပါ။',
               ),
             ),
-          DropdownButtonFormField<int>(
+          if (widget.sharedSession case final session?)
+            ListTile(
+              leading: const Icon(Icons.storefront_outlined),
+              title: Text(session.connection.branchCode),
+            ),
+          if (widget.sharedSession == null) DropdownButtonFormField<int>(
             key: ValueKey(branch),
             initialValue: branch,
             isExpanded: true,
@@ -562,7 +612,7 @@ class DashboardPageState extends State<DashboardPage> {
                 ),
               ),
               TextButton(
-                onPressed: branch == null || loading
+                onPressed: widget.sharedSession != null || branch == null || loading
                     ? null
                     : () async {
                         await Navigator.push<void>(
@@ -634,7 +684,8 @@ class RecentTransactionTile extends StatelessWidget {
               : Icons.payments_outlined,
           size: 20,
         ),
-        title: Text('$prefix-${(row['id'] as int).toString().padLeft(6, '0')}'),
+        title: Text(row['reference'] as String? ??
+            '$prefix-${(row['id'] as int).toString().padLeft(6, '0')}'),
         subtitle: Text(
           '${AppDateTime.format(row['recorded_at'])}${row['status'] == 'void' ? ' · VOID' : ''}',
         ),

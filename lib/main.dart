@@ -482,18 +482,26 @@ class _HomePageState extends State<HomePage> {
         historyOnly ? SharedPosPageKind.expenses : SharedPosPageKind.expense,
       _ => null,
     };
+    final usesOriginalLayout =
+        sharedKind == SharedPosPageKind.stock ||
+        sharedKind == SharedPosPageKind.purchases;
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
-        builder: (context) => sharedKind == SharedPosPageKind.stock && session != null
-            ? page
-            : DesktopScaffold(
-          appBar: AppBar(title: Text(AppLanguage.text(title))),
-          body: session != null && sharedKind != null && sharedKind != SharedPosPageKind.stock
-              ? SharedPosPage(session: session, kind: sharedKind)
-              : session == null && sharedKind != null && _sharedRequired
-              ? _sharedConnectionStatus()
-              : page,
-        ),
+        builder: (context) {
+          if (session != null && sharedKind == SharedPosPageKind.stock) {
+            return page;
+          }
+          return DesktopScaffold(
+            appBar: AppBar(title: Text(AppLanguage.text(title))),
+            body: sharedKind == null
+                ? page
+                : session != null && !usesOriginalLayout
+                ? SharedPosPage(session: session, kind: sharedKind)
+                : session == null && _sharedRequired
+                ? _sharedConnectionStatus()
+                : page,
+          );
+        },
       ),
     );
     if (mounted) {
@@ -677,10 +685,21 @@ class _HomePageState extends State<HomePage> {
           Expanded(
             child: session == null
                 ? _sharedConnectionStatus()
-                : SharedPosPage(
+                : DashboardPage(
                     key: ValueKey(session),
-                    session: session,
-                    kind: SharedPosPageKind.dashboard,
+                    sharedSession: session,
+                    onAction: dashboardAction,
+                    onBranch: (_) {},
+                    onRecent: (row, _) async {
+                      switch (row['kind']) {
+                        case 'sale':
+                          await openPage('Sale History', const SaleInvoiceHistoryPage());
+                        case 'purchase':
+                          await openPage('Purchase History', const PurchaseHistoryPage());
+                        case 'expense':
+                          await openPage('Expense', const ExpensesPage(historyOnly: true));
+                      }
+                    },
                   ),
           ),
         ],
