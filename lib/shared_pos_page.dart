@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'app_currency.dart';
+import 'app_language.dart';
 import 'shared_pos_session.dart';
 
 enum SharedPosPageKind {
@@ -42,7 +43,7 @@ class _SharedPosPageState extends State<SharedPosPage> {
   Map<String, dynamic>? _view;
   Map<String, dynamic>? _dashboard;
   List<Map> _openBalances = [];
-  bool _thisMonth = false;
+  bool _thisMonth = true;
   String? _product, _account, _message;
   bool _busy = false, _pending = false;
   Timer? _timer;
@@ -758,6 +759,74 @@ class _SharedPosPageState extends State<SharedPosPage> {
     );
   }
 
+  List<Widget> _dashboardOverview(
+    Map<String, dynamic> dashboard,
+    List<Map> accounts,
+    List<Map> vouchers,
+  ) {
+    String t(String en, String my) => AppLanguage.current.value == 'my' ? my : en;
+    Widget amount(IconData icon, String label, Object? value) => Card(
+      child: ListTile(
+        leading: Icon(icon),
+        title: Text(label),
+        subtitle: Text(
+          _money(value),
+          style: Theme.of(context).textTheme.titleLarge,
+        ),
+      ),
+    );
+    final recent = [...vouchers]..sort(
+      (a, b) => '${b['occurred_at']}'.compareTo('${a['occurred_at']}'),
+    );
+    final empty =
+        accounts.isEmpty && vouchers.isEmpty && _rows('stock').isEmpty;
+    return [
+      SegmentedButton<bool>(
+        segments: [
+          ButtonSegment(value: false, label: Text(t('Today', 'ဒီနေ့'))),
+          ButtonSegment(value: true, label: Text(t('This month', 'ဒီလ'))),
+        ],
+        selected: {_thisMonth},
+        onSelectionChanged: (value) => setState(() => _thisMonth = value.single),
+      ),
+      if (empty)
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: Text(t(
+            'No stock, accounts or recent vouchers are available in this cloud branch. If your records are on Windows, ask the owner to import the opening records.',
+            'ဒီ cloud ဆိုင်ခွဲမှာ လက်ကျန်၊ ငွေအကောင့်နဲ့ လတ်တလောဘောင်ချာတွေ မရှိသေးပါ။ စာရင်းတွေ Windows မှာရှိရင် Owner က အဖွင့်စာရင်းတင်ပေးနိုင်ပါတယ်။',
+          )),
+        ),
+      amount(
+        Icons.trending_up,
+        t('Sales after refunds', 'ပြန်အမ်းငွေနုတ်ပြီး အရောင်း'),
+        dashboard[_thisMonth ? 'sales_month' : 'sales_today'],
+      ),
+      amount(
+        Icons.receipt_long_outlined,
+        t('Expenses', 'အသုံးစရိတ်'),
+        dashboard[_thisMonth ? 'expenses_month' : 'expenses_today'],
+      ),
+      amount(
+        Icons.account_balance_wallet_outlined,
+        t('Current account balance', 'လက်ရှိငွေအကောင့်လက်ကျန်'),
+        dashboard['balance'],
+      ),
+      Padding(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        child: Text(t('Recent transactions', 'လတ်တလောစာရင်းများ'),
+            style: Theme.of(context).textTheme.titleMedium),
+      ),
+      if (vouchers.isEmpty)
+        Text(t('No recent transactions.', 'လတ်တလောစာရင်းမရှိသေးပါ။')),
+      for (final row in recent.take(5))
+        ListTile(
+          title: Text('${row['number'] ?? row['note'] ?? row['kind']}'),
+          subtitle: Text('${row['invoice_date'] ?? row['occurred_at']}'),
+          trailing: Text(_money(row['total'])),
+        ),
+    ];
+  }
   @override
   Widget build(BuildContext context) {
     final kind = widget.kind;
@@ -801,35 +870,8 @@ class _SharedPosPageState extends State<SharedPosPage> {
               subtitle: Text('${row['occurred_at']}'),
               trailing: Text(_money(row['total'])),
             ),
-        if (_dashboard case final dashboard?) ...[
-          SegmentedButton<bool>(
-            segments: const [
-              ButtonSegment(value: false, label: Text('Today')),
-              ButtonSegment(value: true, label: Text('This month')),
-            ],
-            selected: {_thisMonth},
-            onSelectionChanged: (value) =>
-                setState(() => _thisMonth = value.single),
-          ),
-          ListTile(
-            title: const Text('Sales after refunds'),
-            trailing: Text(
-              _money(dashboard[_thisMonth ? 'sales_month' : 'sales_today']),
-            ),
-          ),
-          ListTile(
-            title: const Text('Expenses'),
-            trailing: Text(
-              _money(
-                dashboard[_thisMonth ? 'expenses_month' : 'expenses_today'],
-              ),
-            ),
-          ),
-          ListTile(
-            title: const Text('Current account balance'),
-            trailing: Text(_money(dashboard['balance'])),
-          ),
-        ],
+        if (_dashboard case final dashboard?)
+          ..._dashboardOverview(dashboard, accounts, vouchers),
         if (kind == SharedPosPageKind.stock)
           for (final row in _rows('stock'))
             ListTile(
