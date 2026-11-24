@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'app_currency.dart';
+import 'invoice_printer_page.dart';
 import 'app_language.dart';
 import 'shared_pos_session.dart';
 
@@ -468,6 +469,50 @@ class _SharedPosPageState extends State<SharedPosPage> {
     );
   }
 
+  Future<void> _printVoucher(Map row) async {
+    final rawLines = (row['lines'] as List? ?? const []).cast<Map>();
+    final lines = [
+      for (final line in rawLines)
+        <String, Object?>{
+          'item_code': line['item_code'],
+          'item_name': line['item_name'],
+          'qty': line['qty'],
+          'price': line['unit_price'],
+          'amount': line['amount'],
+          'tracking_json': [
+            for (final serial in (line['serials'] as List? ?? const []))
+              {'serial': serial, 'qty': 1},
+          ],
+        },
+    ];
+    final subtotal = lines.fold<int>(0, (sum, line) => sum + (line['amount'] as int));
+    final total = row['total'] as int;
+    final purchase = row['kind'] == 'purchase';
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => InvoicePrintPage.shared(snapshot: {
+          'document_number': row['number'],
+          'shared_voucher': true,
+          'document_prefix': purchase ? 'PUR' : 'INV',
+          if (purchase) 'document_title': 'PURCHASE INVOICE',
+          'branch_name_snapshot': widget.session.connection.branchCode,
+          'branch_code_snapshot': widget.session.connection.branchCode,
+          'invoice_date': row['invoice_date'] ?? row['occurred_at']?.toString().split('T').first,
+          'currency_code': _view?['currency'] ?? 'MMK',
+          'currency_digits': 0,
+          'customer_name': row['counterparty'],
+          'status': row['status'],
+          'void_reason': row['void_reason'],
+          'subtotal': subtotal,
+          'discount_amount': subtotal - total,
+          'total': total,
+          'paid': row['paid'],
+          'balance_due': row['due'],
+          'items': lines,
+        }),
+      ),
+    );
+  }
   Future<void> _voidVoucher(Map voucher) async {
     var reason = '';
     final confirmed = await showDialog<String>(
@@ -956,6 +1001,13 @@ class _SharedPosPageState extends State<SharedPosPage> {
                   ListTile(
                     title: const Text('Void reason'),
                     subtitle: Text(reason),
+                  ),
+                if (row['number'] is String &&
+                    (row['lines'] as List?)?.isNotEmpty == true)
+                  OutlinedButton.icon(
+                    onPressed: _busy ? null : () => _printVoucher(row),
+                    icon: const Icon(Icons.print_outlined),
+                    label: Text(AppLanguage.text('Print / PDF')),
                   ),
                 if (row['can_void'] == true)
                   OutlinedButton(

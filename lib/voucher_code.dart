@@ -16,7 +16,7 @@ class VoucherCode {
     final original =
         snapshot['document_number'] as String? ??
         '$kind-${id.toString().padLeft(6, '0')}';
-    if (kind != 'INV') return original;
+    if (kind != 'INV' || snapshot['shared_voucher'] == true) return original;
     final snapshotCode =
         snapshot['branch_code_snapshot']?.toString().trim() ?? '';
     final branch = snapshot['branch_id'];

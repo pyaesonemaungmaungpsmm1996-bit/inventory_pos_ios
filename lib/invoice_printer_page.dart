@@ -189,7 +189,13 @@ class InvoicePrintPage extends StatefulWidget {
     required this.saleId,
     this.purchase = false,
     this.expense = false,
-  });
+  }) : sharedSnapshot = null;
+  const InvoicePrintPage.shared({
+    super.key,
+    required Map<String, Object?> snapshot,
+  }) : sharedSnapshot = snapshot, saleId = 0, purchase = false, expense = false;
+
+  final Map<String, Object?>? sharedSnapshot;
   final int saleId;
   final bool purchase, expense;
   @override
@@ -226,11 +232,12 @@ class _InvoicePrintPageState extends State<InvoicePrintPage> {
     }
   }
 
-  Future<Map<String, Object?>> snapshot() => widget.expense
-      ? expensePrintSnapshot(widget.saleId)
-      : widget.purchase
-      ? purchasePrintSnapshot(widget.saleId)
-      : AppDatabase.instance.getConfirmedSale(widget.saleId);
+  Future<Map<String, Object?>> snapshot() async {
+    if (widget.sharedSnapshot case final shared?) return shared;
+    if (widget.expense) return expensePrintSnapshot(widget.saleId);
+    if (widget.purchase) return purchasePrintSnapshot(widget.saleId);
+    return AppDatabase.instance.getConfirmedSale(widget.saleId);
+  }
 
   Future<void> preview(InvoicePrintSettings value) async {
     if (busy) {
@@ -257,7 +264,7 @@ class _InvoicePrintPageState extends State<InvoicePrintPage> {
       if (!mounted) {
         return;
       }
-      final number =
+      final number = (widget.sharedSnapshot?['document_number'] as String?) ??
           '${widget.expense
               ? 'EXP'
               : widget.purchase
