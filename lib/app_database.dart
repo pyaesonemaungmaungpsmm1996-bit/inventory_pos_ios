@@ -32,6 +32,7 @@ import 'app_datetime.dart';
 import 'barcode_rules.dart';
 import 'business_countries.dart';
 import 'business_timezones.dart';
+import 'sync_proof/local_store.dart';
 
 class AppDatabase {
   AppDatabase._();
@@ -89,6 +90,7 @@ class AppDatabase {
         await SubscriptionRuntime.install(db);
         await CatalogIdentity.install(db);
         await BackupChangeTracker.install(db);
+        await SyncProofLocalStore.install(db);
       },
       onCreate: (db, version) async {
         await db.execute('''

@@ -61,6 +61,7 @@ import 'sale_invoices_page.dart';
 import 'sale_returns_page.dart';
 import 'stock_transfer_page.dart';
 import 'stock_adjustment_page.dart';
+import 'sync_proof_page.dart';
 
 final themePreference = ValueNotifier<ThemeMode>(ThemeMode.system);
 final settingsStorage = SharedPreferencesAsync();
@@ -1001,6 +1002,12 @@ class _HomePageState extends State<HomePage> {
                 'Sync & Export',
                 Icons.cloud_sync_outlined,
                 onTap: () => openPage('Export Reports', const DataExportPage()),
+              ),
+              settingsRow(
+                'Sync Proof Test',
+                Icons.sync_lock_outlined,
+                subtitle: 'Native offline / online proof',
+                onTap: () => openPage('Sync Proof Test', const SyncProofPage()),
               ),
               settingsRow(
                 'Activity History',

@@ -6,9 +6,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class OnlineAccounts {
-  static const url = 'https://hylxyyzwsppaufzmqcbg.supabase.co';
+  static const url = 'https://epulzbbkjifvqzdcubfw.supabase.co';
   // Client-side publishable key. Never put a secret/service-role key here.
-  static const key = 'sb_publishable_LofdBSh-6F93h-ypBMZ7NA_7wPemrNo';
+  static const key = 'sb_publishable_8guecpeaozPLMu7u90YUfA_I1v7CNXu';
   static Future<void>? _ready;
   static Future<void> initialize() => _ready ??= _initialize();
   static Future<void> _initialize() async {

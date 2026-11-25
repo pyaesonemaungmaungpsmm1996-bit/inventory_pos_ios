@@ -81,6 +81,7 @@ class SyncProofLocalStore {
     );
     return rows.map((row) {
       final status = switch (row['status']) {
+        'conflict' => SyncOperationStatus.conflict,
         'failed' => SyncOperationStatus.failed,
         _ => SyncOperationStatus.pending,
       };
@@ -116,10 +117,15 @@ class SyncProofLocalStore {
   }
 
   Future<void> markConflict(String operationId, String error) => db.update(
+    'sync_proof_outbox',
+    {'status': 'conflict', 'last_error': 'CONFLICT: $error'},
+    where: 'operation_id = ?',
+    whereArgs: [operationId],
+  );
+
+  Future<List<Map<String, Object?>>> outbox() => db.query(
         'sync_proof_outbox',
-        {'status': 'failed', 'last_error': 'CONFLICT: $error'},
-        where: 'operation_id = ?',
-        whereArgs: [operationId],
+        orderBy: 'created_at DESC, operation_id DESC',
       );
 
   Future<int> cursor(String businessId) async {
